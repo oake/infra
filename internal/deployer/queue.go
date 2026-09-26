@@ -146,6 +146,13 @@ func (r *Runner) Sync(ctx context.Context) error {
 			pending[id] = *e.Result
 		}
 	}
+	// Retry a failed result write before publishing anything from memory.
+	if len(pending) > 0 {
+		if err := r.save(); err != nil {
+			r.mu.Unlock()
+			return err
+		}
+	}
 	r.mu.Unlock()
 	for id, result := range pending {
 		if e := r.deliver(ctx, id, result); e != nil {
@@ -172,120 +179,149 @@ func (r *Runner) Sync(ctx context.Context) error {
 	}
 	return r.save()
 }
-func (r *Runner) Cycle(ctx context.Context, concurrency int) error {
-	if concurrency < 1 {
-		return errors.New("concurrency must be positive")
+
+// execute rechecks the outstanding set immediately before starting a job.
+// Results stay in the journal until Sync acknowledges them with the hub.
+func (r *Runner) execute(ctx context.Context, id string) error {
+	current, err := r.jobs(ctx)
+	if err != nil {
+		return err
 	}
-	if e := r.Sync(ctx); e != nil {
-		return e
-	}
-	r.mu.Lock()
-	ids := []string{}
-	for id, e := range r.Entries {
-		if e.Phase == "queued" {
-			ids = append(ids, id)
-		}
-	}
-	sort.Slice(ids, func(i, j int) bool { return r.Entries[ids[i]].Job.Created.Before(r.Entries[ids[j]].Job.Created) })
-	r.mu.Unlock()
-	sem := make(chan struct{}, concurrency)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	busy := map[string]bool{}
-	errs := make(chan error, len(ids))
-	for _, id := range ids {
-		if ctx.Err() != nil {
+	found := false
+	for _, job := range current {
+		if job.ID == id {
+			found = true
 			break
 		}
-		sem <- struct{}{}
-		wg.Add(1)
-		go func(id string) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			r.mu.Lock()
-			entry := r.Entries[id]
-			r.mu.Unlock()
-			mu.Lock()
-			if busy[entry.Job.Host] {
-				mu.Unlock()
-				return
-			}
-			busy[entry.Job.Host] = true
-			mu.Unlock()
-			defer func() { mu.Lock(); delete(busy, entry.Job.Host); mu.Unlock() }()
-			// Immediately before execution, ask for the current read-only outstanding set.
-			current, e := r.jobs(ctx)
-			if e != nil {
-				errs <- e
-				return
-			}
-			found := false
-			for _, j := range current {
-				if j.ID == id {
-					found = true
-					break
-				}
-			}
-			r.mu.Lock()
-			entry = r.Entries[id]
-			if !found {
-				delete(r.Entries, id)
-				e = r.save()
-				r.mu.Unlock()
-				if e != nil {
-					errs <- e
-				}
-				return
-			}
-			entry.Phase = "running"
-			r.Entries[id] = entry
-			e = r.save()
-			r.mu.Unlock()
-			if e != nil {
-				errs <- e
-				return
-			}
-			result := r.Execute(ctx, entry.Job)
-			result.Finished = time.Now().UTC()
-			r.mu.Lock()
-			entry.Phase = "result"
-			entry.Result = &result
-			r.Entries[id] = entry
-			e = r.save()
-			r.mu.Unlock()
-			if e != nil {
-				errs <- fmt.Errorf("persist execution result: %w", e)
-				return
-			}
-			if e := r.deliver(ctx, id, result); e != nil {
-				errs <- e
-			}
-		}(id)
 	}
-	wg.Wait()
-	close(errs)
-	for e := range errs {
-		if e != nil {
-			return e
-		}
+	r.mu.Lock()
+	entry, exists := r.Entries[id]
+	if !exists || entry.Phase != "queued" {
+		r.mu.Unlock()
+		return nil
 	}
-	return r.Sync(ctx)
+	if !found {
+		delete(r.Entries, id)
+		err = r.save()
+		r.mu.Unlock()
+		return err
+	}
+	if ctx.Err() != nil {
+		r.mu.Unlock()
+		return ctx.Err()
+	}
+	entry.Phase = "running"
+	r.Entries[id] = entry
+	err = r.save()
+	r.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	result := r.Execute(ctx, entry.Job)
+	result.Finished = time.Now().UTC()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry.Phase, entry.Result = "result", &result
+	r.Entries[id] = entry
+	if err = r.save(); err != nil {
+		return fmt.Errorf("persist execution result: %w", err)
+	}
+	return nil
 }
+
 func (r *Runner) Run(ctx context.Context, interval time.Duration, concurrency int) error {
 	if interval <= 0 {
 		return errors.New("poll interval must be positive")
 	}
-	for {
-		if e := r.Cycle(ctx, concurrency); e != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			slog.Warn("runner cycle", "error", e)
+	if concurrency < 1 {
+		return errors.New("concurrency must be positive")
+	}
+	type completion struct {
+		id  string
+		err error
+	}
+	completed := make(chan completion, concurrency)
+	active := map[string]string{} // job ID -> host, including pre-execution checks
+	retryAfter := map[string]time.Time{}
+	var workers sync.WaitGroup
+	defer workers.Wait()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	dispatch := func() {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		busy := map[string]bool{}
+		for _, host := range active {
+			busy[host] = true
 		}
+		// Never start another job on a host with an unacknowledged result.
+		for _, entry := range r.Entries {
+			if entry.Phase == "running" || entry.Phase == "result" {
+				busy[entry.Job.Host] = true
+			}
+		}
+		ids := []string{}
+		for id, entry := range r.Entries {
+			if entry.Phase == "queued" && !time.Now().Before(retryAfter[id]) {
+				ids = append(ids, id)
+			}
+		}
+		sort.Slice(ids, func(i, j int) bool {
+			a, b := r.Entries[ids[i]].Job, r.Entries[ids[j]].Job
+			if a.Created.Equal(b.Created) {
+				return a.ID < b.ID
+			}
+			return a.Created.Before(b.Created)
+		})
+		for _, id := range ids {
+			if len(active) >= concurrency || ctx.Err() != nil {
+				break
+			}
+			host := r.Entries[id].Job.Host
+			if busy[host] {
+				continue
+			}
+			active[id], busy[host] = host, true
+			delete(retryAfter, id)
+			workers.Add(1)
+			go func(id string) {
+				defer workers.Done()
+				completed <- completion{id, r.execute(ctx, id)}
+			}(id)
+		}
+	}
+	refresh := func() {
+		if err := r.Sync(ctx); err != nil {
+			if ctx.Err() == nil {
+				slog.Warn("runner sync", "error", err)
+			}
+			return
+		}
+		for id := range retryAfter {
+			r.mu.Lock()
+			_, exists := r.Entries[id]
+			r.mu.Unlock()
+			if !exists {
+				delete(retryAfter, id)
+			}
+		}
+		dispatch()
+	}
+	refresh()
+	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(interval):
+		case <-ticker.C:
+			refresh()
+		case done := <-completed:
+			delete(active, done.id)
+			if done.err != nil && ctx.Err() == nil {
+				slog.Warn("runner job", "job", done.id, "error", done.err)
+				retryAfter[done.id] = time.Now().Add(interval)
+			}
+			refresh()
 		}
 	}
 }

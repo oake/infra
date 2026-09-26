@@ -14,110 +14,6 @@ import (
 	"github.com/oake/infra/internal/api"
 )
 
-func TestBatchDedupSerializationAndDurableResults(t *testing.T) {
-	var mu sync.Mutex
-	jobs := map[string]api.Job{}
-	for i, host := range []string{"owner/repo/a", "owner/repo/b", "owner/repo/a"} {
-		id := string(rune('a' + i))
-		jobs[id] = api.Job{ID: id, Repository: "owner/repo", Host: host, Created: time.Now().Add(time.Duration(i) * time.Second)}
-	}
-	failResults := true
-	submitted := map[string]int{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-		if r.Header.Get("Authorization") != "Bearer edge-token" {
-			t.Error("Traefik token missing")
-		}
-		if r.URL.Query().Get("repository") != "owner/repo" {
-			t.Error("repository missing")
-		}
-		if r.Method == "GET" {
-			batch := []api.Job{}
-			for _, j := range jobs {
-				batch = append(batch, j)
-			}
-			json.NewEncoder(w).Encode(batch)
-			return
-		}
-		id := strings.TrimPrefix(r.URL.Path, "/api/deployer/jobs/")
-		submitted[id]++
-		if failResults {
-			http.Error(w, "hub offline", 503)
-			return
-		}
-		delete(jobs, id)
-		w.Write([]byte(`{"ok":true}`))
-	}))
-	defer server.Close()
-	c, e := api.NewClient(server.URL, "edge-token")
-	if e != nil {
-		t.Fatal(e)
-	}
-	path := filepath.Join(t.TempDir(), "queue.json")
-	running := map[string]int{}
-	executed := map[string]int{}
-	maxTotal := 0
-	total := 0
-	var execMu sync.Mutex
-	execute := func(ctx context.Context, j api.Job) api.Result {
-		execMu.Lock()
-		running[j.Host]++
-		executed[j.ID]++
-		total++
-		if total > maxTotal {
-			maxTotal = total
-		}
-		if running[j.Host] > 1 {
-			t.Error("concurrent jobs on same host")
-		}
-		execMu.Unlock()
-		time.Sleep(20 * time.Millisecond)
-		execMu.Lock()
-		total--
-		running[j.Host]--
-		execMu.Unlock()
-		return api.Result{Outcome: "staged", Detail: "test"}
-	}
-	runner, e := Open(c, "owner/repo", path, execute)
-	if e != nil {
-		t.Fatal(e)
-	}
-	if _, e := Open(c, "owner/repo", path, execute); e == nil {
-		t.Fatal("second process queue lock accepted")
-	}
-	if e = runner.Cycle(t.Context(), 2); e == nil {
-		t.Fatal("result outage should be reported")
-	}
-	runner.Close()
-	runner, e = Open(c, "owner/repo", path, execute)
-	if e != nil {
-		t.Fatal(e)
-	}
-	defer runner.Close()
-	mu.Lock()
-	failResults = false
-	mu.Unlock()
-	for range 3 {
-		if e = runner.Cycle(t.Context(), 2); e != nil {
-			t.Fatal(e)
-		}
-	}
-	for id, n := range executed {
-		if n != 1 {
-			t.Fatalf("job %s executed %d times", id, n)
-		}
-	}
-	if len(executed) != 3 {
-		t.Fatalf("batch incomplete: %v", executed)
-	}
-	if maxTotal < 2 {
-		t.Fatal("different hosts did not execute concurrently")
-	}
-	if len(runner.Entries) != 0 {
-		t.Fatal("acknowledged jobs retained in queue", runner.Entries)
-	}
-}
 func TestInterruptedJobBecomesAmbiguous(t *testing.T) {
 	c, _ := api.NewClient("http://127.0.0.1:1", "")
 	path := filepath.Join(t.TempDir(), "queue.json")
@@ -156,7 +52,10 @@ func TestSupersededBeforeStarting(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer r.Close()
-	if e = r.Cycle(t.Context(), 1); e != nil {
+	if e = r.Sync(t.Context()); e != nil {
+		t.Fatal(e)
+	}
+	if e = r.execute(t.Context(), "job"); e != nil {
 		t.Fatal(e)
 	}
 	if _, exists := r.Entries["job"]; exists {
@@ -179,7 +78,7 @@ func TestRejectsOtherRepositoryJobsAndJournal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = r.Cycle(t.Context(), 1); err == nil {
+	if err = r.Sync(t.Context()); err == nil {
 		t.Fatal("cross-repository batch accepted")
 	}
 	if len(r.Entries) != 0 {
@@ -196,52 +95,219 @@ func TestRejectsOtherRepositoryJobsAndJournal(t *testing.T) {
 	}
 }
 
-func TestResultSentWhileOtherHostStillRunning(t *testing.T) {
-	fastReported := make(chan struct{})
-	releaseSlow := make(chan struct{})
-	var mu sync.Mutex
-	jobs := map[string]api.Job{"fast": {ID: "fast", Host: "a/b/fast", Repository: "a/b"}, "slow": {ID: "slow", Host: "a/b/slow", Repository: "a/b"}}
+type runnerHub struct {
+	mu          sync.Mutex
+	jobs        map[string]api.Job
+	failResults bool
+	reported    chan string
+}
+
+func newRunnerHub(t *testing.T) (*runnerHub, *api.Client) {
+	t.Helper()
+	h := &runnerHub{jobs: map[string]api.Job{}, reported: make(chan string, 100)}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if r.Header.Get("Authorization") != "Bearer token" || r.URL.Query().Get("repository") != "a/b" {
+			t.Error("missing authentication or repository")
+		}
 		if r.Method == "GET" {
-			batch := []api.Job{}
-			for _, j := range jobs {
-				batch = append(batch, j)
+			jobs := []api.Job{}
+			for _, j := range h.jobs {
+				jobs = append(jobs, j)
 			}
-			json.NewEncoder(w).Encode(batch)
+			_ = json.NewEncoder(w).Encode(jobs)
 			return
 		}
 		id := strings.TrimPrefix(r.URL.Path, "/api/deployer/jobs/")
-		delete(jobs, id)
-		if id == "fast" {
-			close(fastReported)
+		if h.failResults {
+			http.Error(w, "offline", 503)
+			return
 		}
-		w.Write([]byte(`{"ok":true}`))
+		delete(h.jobs, id)
+		h.reported <- id
+		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
-	defer server.Close()
-	client, _ := api.NewClient(server.URL, "")
-	runner, err := Open(client, "a/b", filepath.Join(t.TempDir(), "queue"), func(ctx context.Context, j api.Job) api.Result {
-		if j.ID == "slow" {
-			<-releaseSlow
+	t.Cleanup(server.Close)
+	c, err := api.NewClient(server.URL, "token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h, c
+}
+func (h *runnerHub) add(id, host string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.jobs[id] = api.Job{ID: id, Host: "a/b/" + host, Repository: "a/b", Created: time.Now()}
+}
+func receive(t *testing.T, ch <-chan string) string {
+	t.Helper()
+	select {
+	case s := <-ch:
+		return s
+	case <-time.After(3 * time.Second):
+		t.Fatal("scheduler stalled")
+		return ""
+	}
+}
+func startRunner(t *testing.T, c *api.Client, interval time.Duration, concurrency int, execute Execute) (*Runner, func()) {
+	t.Helper()
+	r, err := Open(c, "a/b", filepath.Join(t.TempDir(), "queue.json"), execute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan error, 1)
+	go func() { done <- r.Run(ctx, interval, concurrency) }()
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Error(err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Error("runner did not stop")
+			}
+			r.Close()
+		})
+	}
+	t.Cleanup(stop)
+	return r, stop
+}
+
+func TestRunFourSlotsAndImmediateRefill(t *testing.T) {
+	h, c := newRunnerHub(t)
+	gates := map[string]chan struct{}{}
+	for _, id := range []string{"one", "two", "three", "four", "five"} {
+		h.add(id, id)
+		gates[id] = make(chan struct{})
+	}
+	started := make(chan string, 10)
+	_, _ = startRunner(t, c, time.Hour, 4, func(ctx context.Context, j api.Job) api.Result {
+		started <- j.ID
+		select {
+		case <-gates[j.ID]:
+		case <-ctx.Done():
 		}
 		return api.Result{Outcome: "staged"}
+	})
+	first := map[string]bool{}
+	for range 4 {
+		first[receive(t, started)] = true
+	}
+	if first["five"] {
+		t.Fatal("queue order not respected")
+	}
+	select {
+	case id := <-started:
+		t.Fatalf("exceeded four slots: %s", id)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(gates["one"])
+	if id := receive(t, h.reported); id != "one" {
+		t.Fatal(id)
+	}
+	if id := receive(t, started); id != "five" {
+		t.Fatal("slot not refilled immediately", id)
+	}
+	// Other initial jobs are deliberately still running.
+}
+
+func TestRunPollsNewJobsWhileHostBusyAndSerializesHost(t *testing.T) {
+	h, c := newRunnerHub(t)
+	h.add("old", "same")
+	release := make(chan struct{})
+	started := make(chan string, 10)
+	_, _ = startRunner(t, c, 10*time.Millisecond, 4, func(ctx context.Context, j api.Job) api.Result {
+		started <- j.ID
+		if j.ID == "old" {
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		}
+		return api.Result{Outcome: "staged"}
+	})
+	if receive(t, started) != "old" {
+		t.Fatal("old job did not start")
+	}
+	h.mu.Lock()
+	delete(h.jobs, "old")
+	h.mu.Unlock()
+	h.add("replacement", "same")
+	h.add("new-host", "other")
+	if id := receive(t, started); id != "new-host" {
+		t.Fatal("overlapping work on busy host", id)
+	}
+	if id := receive(t, h.reported); id != "new-host" {
+		t.Fatal(id)
+	}
+	select {
+	case id := <-started:
+		t.Fatal("second job started on busy host", id)
+	case <-time.After(30 * time.Millisecond):
+	}
+	close(release)
+	if id := receive(t, started); id != "replacement" {
+		t.Fatal(id)
+	}
+}
+
+func TestRunDurableResultRetryWithoutReexecution(t *testing.T) {
+	h, c := newRunnerHub(t)
+	h.add("job", "host")
+	h.failResults = true
+	executed := make(chan string, 10)
+	r, stop := startRunner(t, c, 10*time.Millisecond, 4, func(ctx context.Context, j api.Job) api.Result {
+		executed <- j.ID
+		return api.Result{Outcome: "staged"}
+	})
+	if _, err := Open(c, "a/b", r.Path, r.Execute); err == nil {
+		t.Fatal("second runner acquired queue lock")
+	}
+	receive(t, executed)
+	// Wait for the result to be journaled before restarting the process.
+	deadline := time.After(3 * time.Second)
+	for {
+		r.mu.Lock()
+		entry := r.Entries["job"]
+		r.mu.Unlock()
+		if entry.Phase == "result" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("result not persisted")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	stop()
+	restored, err := Open(c, "a/b", r.Path, func(context.Context, api.Job) api.Result {
+		t.Error("durable result executed again")
+		return api.Result{}
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer runner.Close()
-	done := make(chan error, 1)
-	go func() { done <- runner.Cycle(t.Context(), 2) }()
-	select {
-	case <-fastReported:
-	case <-time.After(3 * time.Second):
-		close(releaseSlow)
-		<-done
-		t.Fatal("fast result waited for slow host")
-	}
-	close(releaseSlow)
-	if err := <-done; err != nil {
+	defer restored.Close()
+	h.mu.Lock()
+	h.failResults = false
+	h.mu.Unlock()
+	if err = restored.Sync(t.Context()); err != nil {
 		t.Fatal(err)
+	}
+	if receive(t, h.reported) != "job" {
+		t.Fatal("wrong result")
+	}
+	if len(restored.Entries) != 0 {
+		t.Fatal("acknowledged job retained")
+	}
+	select {
+	case <-executed:
+		t.Fatal("job ran twice")
+	default:
 	}
 }

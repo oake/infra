@@ -18,7 +18,7 @@ func main() {
 	tokenFile := flag.String("token-file", os.Getenv("INFRA_TOKEN_FILE"), "Traefik bearer token file (or INFRA_TOKEN)")
 	queue := flag.String("queue", "/var/lib/infra-deployer/queue.json", "durable execution queue")
 	interval := flag.Duration("interval", 12*time.Second, "poll interval")
-	concurrency := flag.Int("concurrency", 2, "concurrent hosts")
+	concurrency := flag.Int("concurrency", 4, "concurrent hosts")
 	flag.Parse()
 	token, e := api.Token(os.Getenv("INFRA_TOKEN"), *tokenFile)
 	if e != nil {
