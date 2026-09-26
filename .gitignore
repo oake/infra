@@ -1,0 +1,8 @@
+.DS_Store
+.data/
+bin/
+.env
+*.test
+coverage.out
+/docs/
+/AGENTS.md
