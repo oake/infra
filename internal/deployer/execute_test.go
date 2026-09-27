@@ -31,13 +31,13 @@ func TestStageIsBootOnlyAndCannotBuild(t *testing.T) {
 		case "ssh":
 			return "", nil
 		case "nix":
-			if strings.Contains(joined, "nixosConfigurations") {
+			if strings.Contains(joined, "config.system.build.toplevel") {
 				return root, nil
 			}
 			if strings.Contains(joined, "profiles.system.path") {
 				return activation, nil
 			}
-			return `{"hostname":"host","user":"root","opts":[],"remoteBuild":false}`, nil
+			return `{"hostnames":["host"],"user":"root","opts":[],"remoteBuild":false}`, nil
 		case "deploy":
 			deployed = true
 			if strings.Contains(joined, "substituters") {

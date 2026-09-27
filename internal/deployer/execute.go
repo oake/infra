@@ -70,13 +70,13 @@ func (e Executor) Execute(ctx context.Context, j api.Job) api.Result {
 		}
 	}
 	// Read the same target settings that deploy-rs inherits from its flake.
-	apply := fmt.Sprintf(`d: let n = d.nodes.%s; p = n.profiles.system; in { hostname = n.hostname; user = p.sshUser or n.sshUser or d.sshUser or "root"; opts = p.sshOpts or n.sshOpts or d.sshOpts or []; remoteBuild = p.remoteBuild or n.remoteBuild or d.remoteBuild or false; }`, j.Node)
-	settings, err := run(ctx, "nix", "eval", "--json", source+"#deploy", "--apply", apply, "--no-write-lock-file")
+	expression := fmt.Sprintf(`let f = builtins.getFlake %q; d = f.deploy; n = d.nodes.%s; p = n.profiles.system; hosts = f.nixosConfigurations.%s.config.infra.deploy.fqdn; in { hostnames = if builtins.isList hosts then hosts else [ hosts ]; user = p.sshUser or n.sshUser or d.sshUser or "root"; opts = p.sshOpts or n.sshOpts or d.sshOpts or []; remoteBuild = p.remoteBuild or n.remoteBuild or d.remoteBuild or false; }`, source, j.Node, j.Node)
+	settings, err := run(ctx, "nix", "eval", "--json", "--expr", expression, "--no-write-lock-file")
 	if err != nil {
 		return result("failed", err)
 	}
 	var ssh struct {
-		Hostname    string   `json:"hostname"`
+		Hostnames   []string `json:"hostnames"`
 		User        string   `json:"user"`
 		Opts        []string `json:"opts"`
 		RemoteBuild bool     `json:"remoteBuild"`
@@ -87,20 +87,39 @@ func (e Executor) Execute(ctx context.Context, j api.Job) api.Result {
 	if ssh.RemoteBuild && j.Kind != "reboot" {
 		return result("failed", errors.New("remoteBuild must be disabled for cache-only staging"))
 	}
-	if ssh.Hostname == "" || strings.HasPrefix(ssh.Hostname, "-") || strings.ContainsAny(ssh.Hostname, " \n\r\t") || !api.Name.MatchString(ssh.User) {
+	if len(ssh.Hostnames) == 0 || !api.Name.MatchString(ssh.User) {
 		return result("failed", errors.New("invalid SSH destination"))
 	}
-	sshArgs := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes"}
-	sshArgs = append(sshArgs, ssh.Opts...)
-	sshArgs = append(sshArgs, ssh.User+"@"+ssh.Hostname, "true")
-	probe, cancelProbe := context.WithTimeout(ctx, 15*time.Second)
-	_, err = run(probe, "ssh", sshArgs...)
-	cancelProbe()
-	if err != nil {
-		if strings.Contains(err.Error(), "Connection timed out") || strings.Contains(err.Error(), "Connection refused") || strings.Contains(err.Error(), "No route to host") || strings.Contains(err.Error(), "network is unreachable") || errors.Is(err, context.DeadlineExceeded) {
-			return result("unreachable", err)
+	for _, hostname := range ssh.Hostnames {
+		if hostname == "" || strings.HasPrefix(hostname, "-") || strings.ContainsAny(hostname, " \n\r\t") {
+			return result("failed", errors.New("invalid SSH destination"))
 		}
-		return result("failed", err)
+	}
+	sshBase := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes"}
+	sshBase = append(sshBase, ssh.Opts...)
+	var sshArgs []string
+	var hostname string
+	failures := []string{}
+	for _, candidate := range ssh.Hostnames {
+		if ctx.Err() != nil {
+			return result("unreachable", ctx.Err())
+		}
+		sshArgs = append(append([]string{}, sshBase...), ssh.User+"@"+candidate, "true")
+		probe, cancelProbe := context.WithTimeout(ctx, 15*time.Second)
+		_, err = run(probe, "ssh", sshArgs...)
+		probeErr := probe.Err()
+		cancelProbe()
+		if err == nil {
+			hostname = candidate
+			break
+		}
+		if !unreachable(err) && !errors.Is(probeErr, context.DeadlineExceeded) {
+			return result("failed", fmt.Errorf("%s: %w", candidate, err))
+		}
+		failures = append(failures, candidate+": "+err.Error())
+	}
+	if hostname == "" {
+		return result("unreachable", errors.New(strings.Join(failures, "\n")))
 	}
 	if j.Kind == "reboot" {
 		if ctx.Err() != nil || !time.Now().Before(j.Expires) {
@@ -126,7 +145,7 @@ func (e Executor) Execute(ctx context.Context, j api.Job) api.Result {
 	}
 	// No local or remote builders. If substitution cannot realize the exact
 	// artifacts, deployment fails rather than compiling a system unexpectedly.
-	_, err = run(ctx, "deploy", source+"#"+j.Node+".system", "--boot", "--magic-rollback", "false", "--auto-rollback", "false", "--rollback-succeeded", "false", "--interactive-sudo", "false", "--skip-checks", "--", "--no-write-lock-file", "--max-jobs", "0", "--builders", "")
+	_, err = run(ctx, "deploy", source+"#"+j.Node+".system", "--hostname", hostname, "--boot", "--magic-rollback", "false", "--auto-rollback", "false", "--rollback-succeeded", "false", "--interactive-sudo", "false", "--skip-checks", "--", "--no-write-lock-file", "--max-jobs", "0", "--builders", "")
 	if err != nil {
 		if ctx.Err() != nil {
 			return result("ambiguous", err)
@@ -134,6 +153,19 @@ func (e Executor) Execute(ctx context.Context, j api.Job) api.Result {
 		return result("failed", err)
 	}
 	return result("staged", nil)
+}
+
+func unreachable(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	for _, text := range []string{"connection timed out", "connection refused", "no route to host", "network is unreachable", "network is down", "could not resolve hostname", "temporary failure in name resolution"} {
+		if strings.Contains(message, text) {
+			return true
+		}
+	}
+	return false
 }
 
 type tail struct{ data []byte }
