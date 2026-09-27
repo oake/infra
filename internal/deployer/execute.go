@@ -95,7 +95,7 @@ func (e Executor) Execute(ctx context.Context, j api.Job) api.Result {
 			return result("failed", errors.New("invalid SSH destination"))
 		}
 	}
-	sshBase := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=yes"}
+	sshBase := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=8", "-o", "StrictHostKeyChecking=accept-new"}
 	sshBase = append(sshBase, ssh.Opts...)
 	var sshArgs []string
 	var hostname string

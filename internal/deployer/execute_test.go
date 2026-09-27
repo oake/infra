@@ -29,6 +29,9 @@ func TestStageIsBootOnlyAndCannotBuild(t *testing.T) {
 		joined := strings.Join(args, " ")
 		switch name {
 		case "ssh":
+			if !strings.Contains(joined, "StrictHostKeyChecking=accept-new") {
+				t.Fatal("SSH must accept first-seen host keys")
+			}
 			return "", nil
 		case "nix":
 			if strings.Contains(joined, "config.system.build.toplevel") {
