@@ -39,6 +39,7 @@ type Repository struct {
 	Main        string    `json:"main"`
 }
 type Commit struct {
+	ErrorURLs         map[string]string `json:"error_urls,omitempty"`
 	InventoryComplete bool              `json:"inventory_complete,omitempty"`
 	EvaluatedAt       time.Time         `json:"evaluated_at,omitempty"`
 	Errors            map[string]string `json:"errors,omitempty"`
@@ -82,9 +83,11 @@ type InputChange struct {
 	After      string `json:"after"`
 }
 type CheckFailure struct {
-	Name   string `json:"name"`
-	URL    string `json:"url,omitempty"`
-	Detail string `json:"detail,omitempty"`
+	Name    string `json:"name"`
+	URL     string `json:"url,omitempty"`
+	Detail  string `json:"-"`
+	Summary string `json:"summary,omitempty"`
+	ID      string `json:"-"`
 }
 type PullRequest struct {
 	FailedChecks []CheckFailure `json:"failed_checks,omitempty"`
@@ -110,18 +113,19 @@ type Event struct {
 	Hash string `json:"hash"`
 }
 type State struct {
-	Hosts        map[string]Host        `json:"hosts"`
-	Repositories map[string]Repository  `json:"repositories"`
-	Commits      map[string]Commit      `json:"commits"`
-	Artifacts    map[string]Artifact    `json:"artifacts"`
-	Observations map[string]Observation `json:"observations"`
-	Jobs         map[string]api.Job     `json:"jobs"`
-	PullRequests map[string]PullRequest `json:"pull_requests"`
-	Events       map[string]Event       `json:"-"`
+	Hosts        map[string]Host           `json:"hosts"`
+	Repositories map[string]Repository     `json:"repositories"`
+	Commits      map[string]Commit         `json:"commits"`
+	Artifacts    map[string]Artifact       `json:"artifacts"`
+	Observations map[string]Observation    `json:"observations"`
+	Jobs         map[string]api.Job        `json:"jobs"`
+	PullRequests map[string]PullRequest    `json:"pull_requests"`
+	Events       map[string]Event          `json:"-"`
+	Summaries    map[string]FailureSummary `json:"-"`
 }
 
 func NewState() *State {
-	return &State{map[string]Host{}, map[string]Repository{}, map[string]Commit{}, map[string]Artifact{}, map[string]Observation{}, map[string]api.Job{}, map[string]PullRequest{}, map[string]Event{}}
+	return &State{map[string]Host{}, map[string]Repository{}, map[string]Commit{}, map[string]Artifact{}, map[string]Observation{}, map[string]api.Job{}, map[string]PullRequest{}, map[string]Event{}, map[string]FailureSummary{}}
 }
 func (s *State) Artifact(path string) Artifact {
 	a, ok := s.Artifacts[path]
@@ -172,6 +176,22 @@ func (s *State) ApplyEvent(e api.BuildEvent, hash string, now time.Time) error {
 		at = now
 	}
 	switch e.Kind {
+	case "evaluation-log":
+		id := api.ID(e.Repository, e.Revision)
+		c, ok := s.Commits[id]
+		if !ok {
+			return errors.New("unknown evaluation")
+		}
+		for name, detail := range e.Errors {
+			if current, exists := c.Errors[name]; !exists || current != detail {
+				return errors.New("evaluation error changed")
+			}
+			if c.ErrorURLs == nil {
+				c.ErrorURLs = map[string]string{}
+			}
+			c.ErrorURLs[name] = e.LogURL
+		}
+		s.Commits[id] = c
 	case "evaluation":
 		if !knownRepo && len(e.Mappings) == 0 {
 			return errors.New("new repository requires host metadata")

@@ -16,11 +16,12 @@ import (
 )
 
 type Server struct {
-	Git       *GitRepos
-	gitSyncMu sync.Mutex
-	gitWake   chan struct{}
-	inboxMu   sync.Mutex
-	GitHub    *GitHub
+	Summarizer *Summarizer
+	Git        *GitRepos
+	gitSyncMu  sync.Mutex
+	gitWake    chan struct{}
+	inboxMu    sync.Mutex
+	GitHub     *GitHub
 
 	Store *Store
 	Root  string

@@ -15,7 +15,7 @@ import (
 )
 
 // Domain records are JSON in SQLite; SQL keeps identity and transactions durable.
-var collections = []string{"hosts", "repositories", "commits", "artifacts", "observations", "jobs", "pull_requests", "events"}
+var collections = []string{"hosts", "repositories", "commits", "artifacts", "observations", "jobs", "pull_requests", "events", "summaries"}
 
 type Store struct {
 	DB     *sql.DB
