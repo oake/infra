@@ -229,7 +229,12 @@ func TestProfileWrappersAndManualReplacement(t *testing.T) {
 	if h.StagedCurrent {
 		t.Fatal("old command result incorrectly proves current staging")
 	}
-	if len(outstanding(t, s, h.Repository, now.Add(2*time.Second))) == 0 {
-		t.Fatal("unknown manual experiment silently paused automatic staging")
+	if h.Status != "Paused" {
+		t.Fatal("unknown configuration was not paused")
+	}
+	for _, queued := range outstanding(t, s, h.Repository, now.Add(2*time.Second)) {
+		if queued.Host == h.ID {
+			t.Fatal("unknown configuration queued automatically")
+		}
 	}
 }

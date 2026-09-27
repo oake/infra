@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/oake/infra/internal/api"
@@ -82,9 +83,10 @@ func writeSnapshot(root string, s api.Snapshot) (string, error) {
 }
 
 type PackageDiff struct {
-	Name   string `json:"name"`
-	Before string `json:"before"`
-	After  string `json:"after"`
+	Explicit bool   `json:"explicit"`
+	Name     string `json:"name"`
+	Before   string `json:"before"`
+	After    string `json:"after"`
 }
 type Comparison struct {
 	MissingHosts []string      `json:"missing_hosts,omitempty"`
@@ -119,7 +121,7 @@ func compare(ctx context.Context, s *State, root, dix string, old, next string) 
 		return c, err
 	}
 	c.Engine = engine
-	key := api.ID(a.Snapshot, b.Snapshot, engine)
+	key := api.ID(a.Snapshot, b.Snapshot, engine, "package-versions-v4")
 	cache := filepath.Join(root, "diffs", key+".json")
 	release, err := lockDiff(ctx, cache)
 	if err != nil {
@@ -151,17 +153,23 @@ func compare(ctx context.Context, s *State, root, dix string, old, next string) 
 		SizeOld int64 `json:"size_old"`
 		SizeNew int64 `json:"size_new"`
 		Diffs   []struct {
-			Name     string `json:"name"`
-			Versions []struct {
-				Kind string `json:"kind"`
-				Old  struct {
-					Name string `json:"name"`
+			Name      string `json:"name"`
+			Selection string `json:"selection"`
+			Versions  []struct {
+				Kind      string `json:"kind"`
+				OldAmount int    `json:"old_amount"`
+				NewAmount int    `json:"new_amount"`
+				Old       struct {
+					Name   string `json:"name"`
+					Amount int    `json:"amount"`
 				} `json:"old"`
 				New struct {
-					Name string `json:"name"`
+					Name   string `json:"name"`
+					Amount int    `json:"amount"`
 				} `json:"new"`
 				Version struct {
-					Name string `json:"name"`
+					Name   string `json:"name"`
+					Amount int    `json:"amount"`
 				} `json:"version"`
 			} `json:"versions"`
 		} `json:"diffs"`
@@ -169,24 +177,42 @@ func compare(ctx context.Context, s *State, root, dix string, old, next string) 
 	if e := json.Unmarshal(out.Bytes(), &r); e != nil {
 		return c, e
 	}
+	var oldVersions, newVersions map[string]string
+	for _, d := range r.Diffs {
+		if len(d.Versions) == 0 {
+			oldVersions, err = snapshotVersions(oldFile)
+			if err != nil {
+				return c, err
+			}
+			newVersions, err = snapshotVersions(newFile)
+			if err != nil {
+				return c, err
+			}
+			break
+		}
+	}
 	c.SizeOld = r.SizeOld
 	c.SizeNew = r.SizeNew
 	for _, d := range r.Diffs {
-		p := PackageDiff{Name: d.Name}
+		p := PackageDiff{Name: d.Name, Explicit: d.Selection == "Selected" || d.Selection == "NewlySelected" || d.Selection == "NewlyUnselected"}
+		if len(d.Versions) == 0 {
+			p.Before, p.After = oldVersions[d.Name], newVersions[d.Name]
+		}
 		for _, v := range d.Versions {
 			switch v.Kind {
 			case "changed":
-				p.Before += v.Old.Name + " "
-				p.After += v.New.Name + " "
+				p.Before += versionAmount(v.Old.Name, v.Old.Amount, false) + "\n"
+				p.After += versionAmount(v.New.Name, v.New.Amount, false) + "\n"
 			case "added":
-				p.After += v.Version.Name + " "
+				p.After += versionAmount(v.Version.Name, v.Version.Amount, false) + "\n"
 			case "removed":
-				p.Before += v.Version.Name + " "
-			default:
-				p.Before += v.Version.Name + " (count changed) "
-				p.After += v.Version.Name + " (count changed) "
+				p.Before += versionAmount(v.Version.Name, v.Version.Amount, false) + "\n"
+			case "amount_changed":
+				p.Before += versionAmount(v.Version.Name, v.OldAmount, true) + "\n"
+				p.After += versionAmount(v.Version.Name, v.NewAmount, true) + "\n"
 			}
 		}
+		p.Before, p.After = strings.TrimSpace(p.Before), strings.TrimSpace(p.After)
 		c.Packages = append(c.Packages, p)
 	}
 	c.Status = "different"
@@ -195,6 +221,66 @@ func compare(ctx context.Context, s *State, root, dix string, old, next string) 
 		return c, e
 	}
 	return c, atomicWrite(cache, data)
+}
+
+func versionAmount(name string, amount int, explicit bool) string {
+	if amount > 1 || explicit {
+		return fmt.Sprintf("%s ×%d", name, amount)
+	}
+	return name
+}
+
+// Resolve unchanged versions omitted from dix's size-only diff entries.
+func snapshotVersions(file string) (map[string]string, error) {
+	raw, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	var snapshot api.Snapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		return nil, err
+	}
+	versions := map[string]map[string]bool{}
+	for _, path := range snapshot.Closure {
+		_, name, ok := strings.Cut(filepath.Base(path.Path), "-")
+		if !ok {
+			continue
+		}
+		name = strings.TrimSuffix(name, ".drv")
+		version := "<none>"
+		// Match dix's name/version split: digit-leading suffix or a git hash.
+		for i := 1; i < len(name)-1; i++ {
+			if name[i] != '-' {
+				continue
+			}
+			suffix := name[i+1:]
+			isHash, hasLetter := len(suffix) >= 7 && len(suffix) <= 40, false
+			for _, c := range suffix {
+				digit := c >= '0' && c <= '9'
+				letter := c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
+				isHash = isHash && (digit || letter)
+				hasLetter = hasLetter || letter
+			}
+			if suffix[0] >= '0' && suffix[0] <= '9' || isHash && hasLetter {
+				name, version = name[:i], suffix
+				break
+			}
+		}
+		if versions[name] == nil {
+			versions[name] = map[string]bool{}
+		}
+		versions[name][version] = true
+	}
+	out := map[string]string{}
+	for name, set := range versions {
+		values := make([]string, 0, len(set))
+		for version := range set {
+			values = append(values, version)
+		}
+		sort.Strings(values)
+		out[name] = strings.Join(values, "\n")
+	}
+	return out, nil
 }
 
 type cappedBuffer struct{ bytes.Buffer }

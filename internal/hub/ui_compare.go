@@ -18,6 +18,7 @@ type HostComparison struct {
 	Pair     string `json:"pair"`
 }
 type ComparisonDetail struct {
+	PRTitle      string                `json:"pr_title,omitempty"`
 	Repository   string                `json:"repository"`
 	Head         *UICommit             `json:"head"`
 	Base         *UICommit             `json:"base"`
@@ -69,6 +70,7 @@ func (s *Server) CompareCommits(ctx context.Context, repo, old, next string) (Co
 		if err = json.Unmarshal(raw, &p); err != nil {
 			return out, err
 		}
+		out.PRTitle = p.Title
 		out.GitHubURL = fmt.Sprintf("https://github.com/%s/pull/%d", repo, p.Number)
 		if p.Base == old {
 			out.Inputs = p.Inputs
@@ -106,6 +108,9 @@ func (s *Server) CompareCommits(ctx context.Context, repo, old, next string) (Co
 		hostIDs[id] = true
 	}
 	for id := range hostIDs {
+		if base[id] != "" && base[id] == head[id] {
+			continue
+		}
 		h := hosts[id]
 		name := h.Name
 		if name == "" {
@@ -146,6 +151,10 @@ func (s *Server) CompareCommits(ctx context.Context, repo, old, next string) (Co
 	}
 	for i := range out.FailedChecks {
 		out.FailedChecks[i].Summary = summaries[out.FailedChecks[i].ID].Summary
+	}
+	rules, err := readUIRows[PackageBlock](ctx, tx, "SELECT id,body FROM package_blocks")
+	if err != nil {
+		return out, err
 	}
 	if err = tx.Commit(); err != nil {
 		return out, err
@@ -190,7 +199,14 @@ func (s *Server) CompareCommits(ctx context.Context, repo, old, next string) (Co
 		out.Comparisons[r.key] = r.diff
 	}
 	out.All = HostComparison{Name: "All hosts", Pair: "all"}
-	out.Comparisons[out.All.Pair] = s.combinedComparison(ctx, state, out.Hosts, pairs)
+	if len(hostIDs) > 0 && len(out.Hosts) == 0 {
+		out.Comparisons[out.All.Pair] = Comparison{Status: "unchanged", Packages: []PackageDiff{}}
+	} else {
+		out.Comparisons[out.All.Pair] = s.combinedComparison(ctx, state, out.Hosts, pairs)
+	}
+	for key, c := range out.Comparisons {
+		out.Comparisons[key] = filterPackages(c, rules)
+	}
 	if err = ctx.Err(); err != nil {
 		return out, err
 	}

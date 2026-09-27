@@ -199,6 +199,11 @@ func lockChanges(before, after map[string]json.RawMessage) []InputChange {
 			_ = json.Unmarshal(after[name], &next)
 			change := InputChange{Name: name, Before: describe(before[name]), After: describe(after[name]), BeforeDate: old.date(), AfterDate: next.date()}
 			oldRepo, nextRepo := old.githubRepo(), next.githubRepo()
+			if len(before[name]) == 0 && nextRepo != "" && api.Revision.MatchString(next.Rev) {
+				change.CompareURL = "https://github.com/" + nextRepo + "/commit/" + next.Rev
+			} else if len(after[name]) == 0 && oldRepo != "" && api.Revision.MatchString(old.Rev) {
+				change.CompareURL = "https://github.com/" + oldRepo + "/commit/" + old.Rev
+			}
 			if oldRepo != "" && nextRepo != "" && api.Revision.MatchString(old.Rev) && api.Revision.MatchString(next.Rev) {
 				target := next.Rev
 				if oldRepo != nextRepo {

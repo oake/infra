@@ -29,6 +29,8 @@ type Beacon struct {
 	Profile string `json:"profile,omitempty"`
 }
 type Job struct {
+	Kind       string    `json:"kind,omitempty"`
+	Expires    time.Time `json:"expires,omitempty"`
 	ID         string    `json:"id"`
 	Host       string    `json:"host"`
 	Repository string    `json:"repository"`
@@ -42,7 +44,7 @@ type Job struct {
 	Result     *Result   `json:"result,omitempty"`
 }
 type Result struct {
-	Outcome  string    `json:"outcome"` // staged, unreachable, failed, ambiguous
+	Outcome  string    `json:"outcome"` // staged, rebooting, expired, unreachable, failed, ambiguous
 	Detail   string    `json:"detail"`
 	Finished time.Time `json:"finished"`
 }

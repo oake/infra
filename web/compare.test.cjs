@@ -47,3 +47,11 @@ test('generic summary has commits and failures; PR detection only changes GitHub
  assert(html.includes('Failed checks'));assert(html.includes('&lt;summary&gt;'));assert(!html.includes('raw trace'));assert(html.includes('/steps/1/logs/nix_error'));
  c.data.failed_checks[0].summary='';html=vm.runInContext(`commitComparisonView('${key}')`,c.ctx);assert(!html.includes('raw trace'));assert(!html.includes('&lt;summary&gt;'));assert(html.includes('/steps/1/logs/nix_error'));
 });
+
+test('fleet shows Deploy only for paused hosts',async()=>{
+ const c=setup('/');await settle();
+ vm.runInContext(`state.hosts={paused:{id:'a/b/paused',name:'paused',repository:'a/b',status:'Paused',observation:{},configurations:{}},manual:{id:'a/b/manual',name:'manual',repository:'a/b',status:'Outdated',observation:{},configurations:{}}}`,c.ctx);
+ const html=vm.runInContext('hostTables()',c.ctx);
+ assert.equal((html.match(/data-action="deploy"/g)||[]).length,1);
+ assert(html.includes('data-host="a/b/paused"'));
+});

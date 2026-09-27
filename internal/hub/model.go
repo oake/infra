@@ -1,8 +1,8 @@
 package hub
 
 import (
+	"crypto/rand"
 	"errors"
-	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -12,24 +12,25 @@ import (
 )
 
 type Host struct {
-	Removed        bool       `json:"removed"`
-	ID             string     `json:"id"`
-	Name           string     `json:"name"`
-	Platform       string     `json:"platform"`
-	Repository     string     `json:"repository"`
-	Node           string     `json:"node"`
-	Automatic      bool       `json:"automatic"`
-	Observation    api.Beacon `json:"observation"`
-	LastSeen       time.Time  `json:"last_seen"`
-	Desired        string     `json:"desired"`
-	Activation     string     `json:"activation"`
-	Revision       string     `json:"revision"`
-	Staged         string     `json:"staged"`
-	StagedRevision string     `json:"staged_revision"`
-	StagedAt       time.Time  `json:"staged_at"`
-	Status         string     `json:"status"`
-	ProfileSystem  string     `json:"profile_system"`
-	StagedCurrent  bool       `json:"staged_current"`
+	DeploymentApproval string     `json:"deployment_approval,omitempty"`
+	Removed            bool       `json:"removed"`
+	ID                 string     `json:"id"`
+	Name               string     `json:"name"`
+	Platform           string     `json:"platform"`
+	Repository         string     `json:"repository"`
+	Node               string     `json:"node"`
+	Automatic          bool       `json:"automatic"`
+	Observation        api.Beacon `json:"observation"`
+	LastSeen           time.Time  `json:"last_seen"`
+	Desired            string     `json:"desired"`
+	Activation         string     `json:"activation"`
+	Revision           string     `json:"revision"`
+	Staged             string     `json:"staged"`
+	StagedRevision     string     `json:"staged_revision"`
+	StagedAt           time.Time  `json:"staged_at"`
+	Status             string     `json:"status"`
+	ProfileSystem      string     `json:"profile_system"`
+	StagedCurrent      bool       `json:"staged_current"`
 }
 type Repository struct {
 	RefAt       time.Time `json:"ref_at,omitempty"`
@@ -112,20 +113,26 @@ type Event struct {
 	ID   string `json:"id"`
 	Hash string `json:"hash"`
 }
+type PackageBlock struct {
+	Text  string `json:"text"`
+	Match string `json:"match"`
+}
+
 type State struct {
-	Hosts        map[string]Host           `json:"hosts"`
-	Repositories map[string]Repository     `json:"repositories"`
-	Commits      map[string]Commit         `json:"commits"`
-	Artifacts    map[string]Artifact       `json:"artifacts"`
-	Observations map[string]Observation    `json:"observations"`
-	Jobs         map[string]api.Job        `json:"jobs"`
-	PullRequests map[string]PullRequest    `json:"pull_requests"`
-	Events       map[string]Event          `json:"-"`
-	Summaries    map[string]FailureSummary `json:"-"`
+	Hosts         map[string]Host           `json:"hosts"`
+	Repositories  map[string]Repository     `json:"repositories"`
+	Commits       map[string]Commit         `json:"commits"`
+	Artifacts     map[string]Artifact       `json:"artifacts"`
+	Observations  map[string]Observation    `json:"observations"`
+	Jobs          map[string]api.Job        `json:"jobs"`
+	PullRequests  map[string]PullRequest    `json:"pull_requests"`
+	Events        map[string]Event          `json:"-"`
+	Summaries     map[string]FailureSummary `json:"-"`
+	PackageBlocks map[string]PackageBlock   `json:"package_blocks"`
 }
 
 func NewState() *State {
-	return &State{map[string]Host{}, map[string]Repository{}, map[string]Commit{}, map[string]Artifact{}, map[string]Observation{}, map[string]api.Job{}, map[string]PullRequest{}, map[string]Event{}, map[string]FailureSummary{}}
+	return &State{map[string]Host{}, map[string]Repository{}, map[string]Commit{}, map[string]Artifact{}, map[string]Observation{}, map[string]api.Job{}, map[string]PullRequest{}, map[string]Event{}, map[string]FailureSummary{}, map[string]PackageBlock{}}
 }
 func (s *State) Artifact(path string) Artifact {
 	a, ok := s.Artifacts[path]
@@ -305,7 +312,46 @@ func (s *State) ProfileSystem(path string) string {
 	return resolved
 }
 
+func (s *State) configurationOnMain(h Host) bool {
+	if h.Observation.Active == "" {
+		return false
+	}
+	repo := s.Repositories[h.Repository]
+	for _, c := range s.Commits {
+		if c.Repository != h.Repository || (c.Revision != repo.Main && !slices.Contains(repo.MainHistory, c.Revision)) {
+			continue
+		}
+		for _, m := range c.Mappings {
+			if m.Host == h.ID && m.System == h.Observation.Active {
+				return true
+			}
+		}
+	}
+	return false
+}
+func deploymentApproval(h Host) string { return api.ID(h.Observation.Active, h.Desired, h.Activation) }
+
 func (s *State) Reconcile(now time.Time) {
+	// Repeated connection failures add no history: retain the latest per target.
+	latestUnreachable := map[string]string{}
+	for id, j := range s.Jobs {
+		if j.Result == nil || j.Result.Outcome != "unreachable" {
+			continue
+		}
+		key := api.ID(j.Host, j.System, j.Activation, j.Kind)
+		previous, exists := latestUnreachable[key]
+		if !exists {
+			latestUnreachable[key] = id
+			continue
+		}
+		old := s.Jobs[previous]
+		if j.Result.Finished.After(old.Result.Finished) || (j.Result.Finished.Equal(old.Result.Finished) && id > previous) {
+			delete(s.Jobs, previous)
+			latestUnreachable[key] = id
+		} else {
+			delete(s.Jobs, id)
+		}
+	}
 	for id, h := range s.Hosts {
 		h.Desired, h.Activation, h.Revision = "", "", ""
 		h.ProfileSystem = s.ProfileSystem(h.Observation.Profile)
@@ -325,23 +371,28 @@ func (s *State) Reconcile(now time.Time) {
 				}
 			}
 		}
+		unknown := h.Automatic && h.Platform != "darwin" && !s.configurationOnMain(h)
+		if !unknown || h.DeploymentApproval != deploymentApproval(h) {
+			h.DeploymentApproval = ""
+		}
+		paused := unknown && h.DeploymentApproval == ""
 		ready := hostBuilt && s.Ready(h.Desired) && (!h.Automatic || s.Ready(h.Activation))
 		matches := h.Desired != "" && h.Desired == h.Observation.Active
 		staged := h.Desired != "" && !matches && ((h.Desired == h.Staged && h.StagedCurrent) || h.ProfileSystem == h.Desired)
+		rebootQueued := s.reconcileReboots(h)
 		ambiguous := false
 		for _, j := range s.Jobs {
-			if j.Host == id && !j.Superseded && j.Result != nil && j.Result.Outcome == "ambiguous" {
+			if j.Kind != "reboot" && j.Host == id && !j.Superseded && j.Result != nil && j.Result.Outcome == "ambiguous" {
 				ambiguous = true
 			}
 		}
 		var latest *api.Job
-		outstanding, count := false, 0
+		outstanding := false
 		for jid, j := range s.Jobs {
-			if j.Host != id {
+			if j.Host != id || j.Kind == "reboot" {
 				continue
 			}
-			count++
-			if j.Result == nil && (j.System != h.Desired || j.Activation != h.Activation || !h.Automatic || h.Removed || !ready || matches || staged || ambiguous) {
+			if j.Result == nil && (j.System != h.Desired || j.Activation != h.Activation || !h.Automatic || h.Removed || !ready || matches || staged || ambiguous || paused || rebootQueued) {
 				j.Superseded = true
 				s.Jobs[jid] = j
 			}
@@ -357,10 +408,14 @@ func (s *State) Reconcile(now time.Time) {
 		}
 		failed := latest != nil && latest.Result.Outcome != "staged" && latest.Result.Outcome != "unreachable"
 		switch {
+		case rebootQueued:
+			h.Status = "Reboot queued"
 		case matches:
 			h.Status = "Up to date"
 		case staged:
 			h.Status = "Reboot to apply"
+		case paused:
+			h.Status = "Paused"
 		case ambiguous || failed:
 			h.Status = "Deploy failed"
 		case h.Desired == "" || !ready:
@@ -374,7 +429,7 @@ func (s *State) Reconcile(now time.Time) {
 				if latest != nil && latest.Result.Outcome == "unreachable" {
 					notBefore = latest.Result.Finished.Add(time.Minute)
 				}
-				jid := api.ID(id, h.Desired, h.Activation, fmt.Sprint(count))
+				jid := api.ID(id, h.Desired, h.Activation, rand.Text())
 				s.Jobs[jid] = api.Job{ID: jid, Host: id, Repository: h.Repository, Revision: h.Revision, Node: h.Node, System: h.Desired, Activation: h.Activation, Created: now, NotBefore: notBefore}
 			}
 		}
@@ -387,8 +442,11 @@ func (s *State) Result(id, repository string, result api.Result, now time.Time) 
 	if !ok || j.Repository != repository {
 		return errors.New("unknown job")
 	}
-	if !slices.Contains([]string{"staged", "unreachable", "failed", "ambiguous"}, result.Outcome) || len(result.Detail) > 32768 {
+	if !slices.Contains([]string{"staged", "rebooting", "expired", "unreachable", "failed", "ambiguous"}, result.Outcome) || len(result.Detail) > 32768 {
 		return errors.New("invalid result")
+	}
+	if (result.Outcome == "staged" && j.Kind == "reboot") || ((result.Outcome == "rebooting" || result.Outcome == "expired") && j.Kind != "reboot") {
+		return errors.New("result does not match job kind")
 	}
 	if j.Result != nil {
 		if j.Result.Outcome != result.Outcome || j.Result.Detail != result.Detail {
@@ -396,9 +454,17 @@ func (s *State) Result(id, repository string, result api.Result, now time.Time) 
 		}
 		return nil
 	}
-	result.Finished = now
+	if j.Kind != "reboot" || result.Finished.IsZero() || result.Finished.After(now) {
+		result.Finished = now
+	}
 	j.Result = &result
 	s.Jobs[id] = j
+	if j.Kind == "reboot" && !j.Superseded && (result.Outcome == "failed" || result.Outcome == "unreachable") {
+		retry := j
+		retry.ID, retry.Created, retry.NotBefore, retry.Result = api.ID(j.ID, rand.Text()), now, now.Add(time.Minute), nil
+		j.Superseded = true
+		s.Jobs[id], s.Jobs[retry.ID] = j, retry
+	}
 	if result.Outcome == "staged" {
 		h := s.Hosts[j.Host]
 		h.Staged = j.System

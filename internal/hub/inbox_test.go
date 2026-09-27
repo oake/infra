@@ -155,8 +155,8 @@ func TestAutomaticEnrollmentAndUnknownInputsAreDiscarded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(state.Repositories) != 1 || len(state.Hosts) != 1 || len(outstanding(t, state, repo, now.Add(time.Minute))) != 1 {
-		t.Fatal("metadata did not register repository/host and queue ready target")
+	if len(state.Repositories) != 1 || len(state.Hosts) != 1 || len(outstanding(t, state, repo, now.Add(time.Minute))) != 0 {
+		t.Fatal("metadata did not register repository/host without deploying an unknown configuration")
 	}
 	before := len(state.Events)
 	write("unknown.event.json", api.BuildEvent{ID: "unknown", Repository: "other/repo", Revision: rev, Kind: "build", Status: "success", Artifact: path})

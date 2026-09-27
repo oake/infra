@@ -213,7 +213,7 @@ func (g *GitRepos) pair(ctx context.Context, repo, old, next string, mergeBase b
 	if !api.Revision.MatchString(old) || !api.Revision.MatchString(next) {
 		return out, fmt.Errorf("invalid revision")
 	}
-	key := api.ID(repo, old, next, fmt.Sprint(mergeBase))
+	key := api.ID(repo, old, next, fmt.Sprint(mergeBase), "input-links-v2")
 	cache := filepath.Join(g.Root, "git-comparisons", key+".json")
 	if raw, e := os.ReadFile(cache); e == nil && json.Unmarshal(raw, &out) == nil && out.Base != nil && out.Head != nil {
 		return out, nil

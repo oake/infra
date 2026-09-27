@@ -45,7 +45,7 @@ func (s *Store) renewObservation(ctx context.Context, b api.Beacon, now time.Tim
 	if err = probe.Observe(b, now); err != nil {
 		return false, err
 	}
-	if h.Observation == b && !h.LastSeen.Before(h.StagedAt) {
+	if h.Observation == b && !h.LastSeen.Before(h.StagedAt) && h.Status != "Reboot queued" {
 		_, err = tx.ExecContext(ctx, `UPDATE hosts SET body=json_set(body,'$.last_seen',$2) WHERE id=$1`, b.Host, now.Format(time.RFC3339Nano))
 		if err != nil {
 			return false, err
@@ -59,7 +59,7 @@ func (s *Store) Outstanding(ctx context.Context, repo string, now time.Time) ([]
 	rows, err := s.DB.QueryContext(ctx, `SELECT body FROM jobs WHERE body->>'repository'=$1
  AND json_extract(body,'$.result') IS NULL
  AND COALESCE(body->>'superseded',0)=0
- AND julianday(body->>'not_before') <= julianday($2) ORDER BY julianday(body->>'created'),id`, repo, now.Format(time.RFC3339Nano))
+ AND (body->>'kind'='reboot' OR julianday(body->>'not_before') <= julianday($2)) ORDER BY julianday(body->>'created'),id`, repo, now.Format(time.RFC3339Nano))
 	if err != nil {
 		return nil, err
 	}

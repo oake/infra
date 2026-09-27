@@ -64,7 +64,7 @@ func Open(client *api.Client, repository, path string, execute Execute) (*Runner
 		}
 		if v.Phase == "running" {
 			v.Phase = "result"
-			v.Result = &api.Result{Outcome: "ambiguous", Detail: "Runner restarted during deployment. Inspect the host before retrying.", Finished: time.Now().UTC()}
+			v.Result = &api.Result{Outcome: "ambiguous", Detail: "Runner restarted during the job. Inspect the host before retrying.", Finished: time.Now().UTC()}
 			r.Entries[id] = v
 		}
 	}
@@ -263,7 +263,12 @@ func (r *Runner) Run(ctx context.Context, interval time.Duration, concurrency in
 		}
 		ids := []string{}
 		for id, entry := range r.Entries {
-			if entry.Phase == "queued" && !time.Now().Before(retryAfter[id]) {
+			now := time.Now()
+			expired := entry.Job.Kind == "reboot" && !now.Before(entry.Job.Expires)
+			if now.Before(entry.Job.NotBefore) && !expired {
+				continue
+			}
+			if entry.Phase == "queued" && !now.Before(retryAfter[id]) {
 				ids = append(ids, id)
 			}
 		}

@@ -11,3 +11,8 @@ test:
 
 check: test
 	go vet ./...
+
+# UI files are read on every request; no restart needed after edits.
+.PHONY: ui
+ui:
+	go run ./cmd/infra-ui-dev -backend "$(BACKEND)"

@@ -111,16 +111,69 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 		s.mutation(w, r, func(state *State) error { return state.Result(r.PathValue("id"), repository, result, time.Now().UTC()) })
 	})
 	ui := http.NewServeMux()
+	ui.HandleFunc("GET /api/ui/repositories", func(w http.ResponseWriter, r *http.Request) {
+		rows, err := s.Store.DB.QueryContext(r.Context(), "SELECT id FROM repositories ORDER BY id")
+		if err != nil {
+			problem(w, 500, err)
+			return
+		}
+		defer rows.Close()
+		ids := []string{}
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				problem(w, 500, err)
+				return
+			}
+			ids = append(ids, id)
+		}
+		if err := rows.Err(); err != nil {
+			problem(w, 500, err)
+			return
+		}
+		jsonResponse(w, 200, ids)
+	})
+	ui.HandleFunc("GET /api/ui/package-blocks", func(w http.ResponseWriter, r *http.Request) {
+		tx, err := s.Store.DB.BeginTx(r.Context(), nil)
+		if err != nil {
+			problem(w, 500, err)
+			return
+		}
+		defer tx.Rollback()
+		rules, err := readUIRows[PackageBlock](r.Context(), tx, "SELECT id,body FROM package_blocks")
+		if err != nil {
+			problem(w, 500, err)
+			return
+		}
+		jsonResponse(w, 200, rules)
+	})
+	ui.HandleFunc("POST /api/ui/package-blocks", func(w http.ResponseWriter, r *http.Request) {
+		var rule PackageBlock
+		if err := decode(w, r, &rule, 4096); err != nil {
+			problem(w, 400, err)
+			return
+		}
+		rule.Text = strings.TrimSpace(rule.Text)
+		if rule.Text == "" || len(rule.Text) > 512 || (rule.Match != "starts" && rule.Match != "contains" && rule.Match != "exact") {
+			problem(w, 400, errors.New("provide text and a valid match type"))
+			return
+		}
+		s.mutation(w, r, func(st *State) error { st.PackageBlocks[api.ID(rule.Match, rule.Text)] = rule; return nil })
+	})
+	ui.HandleFunc("POST /api/ui/package-blocks/{id}/delete", func(w http.ResponseWriter, r *http.Request) {
+		s.mutation(w, r, func(st *State) error { delete(st.PackageBlocks, r.PathValue("id")); return nil })
+	})
 	ui.HandleFunc("GET /api/ui/state", func(w http.ResponseWriter, r *http.Request) {
 		state, e := s.Store.Fleet(r.Context())
 		if e != nil {
 			problem(w, 500, e)
 			return
 		}
+		state.Username = strings.TrimSpace(r.Header.Get("X-Oake-Username"))
 		jsonResponse(w, 200, state)
 	})
-	ui.HandleFunc("GET /api/ui/hosts/{id}/timeline", func(w http.ResponseWriter, r *http.Request) {
-		page, e := s.Store.HostTimeline(r.Context(), r.PathValue("id"), r.URL.Query().Get("cursor"))
+	ui.HandleFunc("GET /api/ui/hosts/{owner}/{repo}/{host}/timeline", func(w http.ResponseWriter, r *http.Request) {
+		page, e := s.Store.HostTimeline(r.Context(), r.PathValue("owner")+"/"+r.PathValue("repo")+"/"+r.PathValue("host"), r.URL.Query().Get("cursor"), r.URL.Query().Get("before"), r.URL.Query().Get("after"))
 		if e != nil {
 			code, err := uiError(e)
 			problem(w, code, err)
@@ -155,20 +208,34 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 			problem(w, 503, e)
 			return
 		}
-		jsonResponse(w, 200, c)
+		rules, e := s.Store.PackageBlocks(r.Context())
+		if e != nil {
+			problem(w, 500, e)
+			return
+		}
+		jsonResponse(w, 200, filterPackages(c, rules))
 	})
-	ui.HandleFunc("POST /api/ui/hosts/{id}/{action}", func(w http.ResponseWriter, r *http.Request) {
-		id := r.PathValue("id")
+	ui.HandleFunc("POST /api/ui/hosts/{owner}/{repo}/{host}/{action}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("owner") + "/" + r.PathValue("repo") + "/" + r.PathValue("host")
 		action := r.PathValue("action")
 		s.mutation(w, r, func(state *State) error {
-			_, ok := state.Hosts[id]
+			h, ok := state.Hosts[id]
 			if !ok {
 				return errors.New("unknown host")
 			}
 			switch action {
+			case "reboot":
+				return state.QueueReboot(id, time.Now().UTC())
+			case "deploy":
+				if !h.Automatic || h.Platform == "darwin" || state.configurationOnMain(h) || h.Desired == "" {
+					return errors.New("host is not outside main with a known deployment target")
+				}
+				h.DeploymentApproval = deploymentApproval(h)
+				state.Hosts[id] = h
+				fallthrough
 			case "retry":
 				for jid, j := range state.Jobs {
-					if j.Host == id && j.Result != nil && (j.Result.Outcome == "failed" || j.Result.Outcome == "ambiguous") {
+					if j.Kind != "reboot" && j.Host == id && j.Result != nil && (j.Result.Outcome == "failed" || j.Result.Outcome == "ambiguous") {
 						j.Superseded = true
 						state.Jobs[jid] = j
 					}

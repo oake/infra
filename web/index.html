@@ -3,14 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta name="theme-color" content="#f7f8fa" />
-    <title>infra · Fleet</title>
+    <meta name="theme-color" content="#1d70b8" />
+    <title>infra · Hosts</title>
+    <link rel="icon" type="image/svg+xml" href="/nix.svg" />
+    <link rel="preload" href="/fonts/light-94a07e06a1-v2.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/bold-b542beb274-v2.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="stylesheet" href="/style.css" />
     <script src="/app.js" defer></script>
   </head>
   <body>
+    <a class="skip-link" href="#app">Skip to main content</a>
+    <header class="service-header"><div class="service-header-inner"><a class="brand" href="/" aria-label="infra home"><img src="/nix.svg" alt="" /><span>infra</span></a><nav id="repository-switches" aria-label="Switch repository"><button disabled aria-label="Loading repository" aria-busy="true" class="repository-skeleton"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 7h16m-5-5 5 5-5 5M20 17H4m5-5-5 5 5 5"/></svg><span class="skeleton-line" aria-hidden="true"></span></button></nav></div></header>
     <div class="shell">
-      <main id="app" tabindex="-1"><div class="loading">Loading…</div></main>
+      <main id="app" tabindex="-1"><div class="page-skeleton" role="status" aria-label="Loading" aria-busy="true"><div class="skeleton-heading"><span class="skeleton-line"></span></div><div class="skeleton-table"><div class="skeleton-row"><span class="skeleton-line"></span><span class="skeleton-line"></span><span class="skeleton-line"></span></div></div></div></main>
     </div>
     <div id="toast" role="status" aria-live="polite" hidden></div>
   </body>

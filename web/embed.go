@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-//go:embed index.html app.js style.css apple.svg tux.svg
+//go:embed index.html app.js style.css apple.svg tux.svg nix.svg fonts GOVUK-LICENSE.txt
 var assets embed.FS
 
 func Handler() http.Handler {

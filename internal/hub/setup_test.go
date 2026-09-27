@@ -85,6 +85,8 @@ func fixture(t *testing.T) (*State, time.Time, string) {
 		}
 		if tc.mode == "queued-after-staged" {
 			active = testPath("older-live")
+			oldID := api.ID(tc.repo, "older")
+			s.Commits[oldID] = Commit{ID: oldID, Repository: tc.repo, Revision: api.ID("older")[:40], Mappings: []api.Mapping{{Host: id, System: active}}}
 			profile = paths[0]
 		}
 		if tc.mode == "queued-after-staged" {

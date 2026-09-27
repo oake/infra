@@ -14,6 +14,7 @@ import (
 )
 
 type UICommit struct {
+	OffBranch  bool      `json:"offBranch,omitempty"`
 	Repository string    `json:"repository"`
 	Revision   string    `json:"revision"`
 	Title      string    `json:"title"`
@@ -25,6 +26,7 @@ type UIHost struct {
 	Configurations map[string]UICommit `json:"configurations"`
 }
 type FleetState struct {
+	Username     string                 `json:"username,omitempty"`
 	Hosts        map[string]UIHost      `json:"hosts"`
 	Repositories map[string]Repository  `json:"repositories"`
 	PullRequests map[string]PullRequest `json:"pull_requests"`
@@ -68,8 +70,9 @@ func (s *Store) Fleet(ctx context.Context) (FleetState, error) {
 		return out, err
 	}
 	// Only provenance for the two paths displayed in each fleet row.
-	rows, err := tx.QueryContext(ctx, `SELECT host,path,body FROM (
+	rows, err := tx.QueryContext(ctx, `SELECT host,path,body,NOT on_main FROM (
  SELECT h.id AS host,m.value->>'system' AS path,json_remove(c.body,'$.mappings') AS body,
+ (c.body->>'revision'=r.body->>'main' OR c.body->>'revision' IN (SELECT value FROM json_each(r.body,'$.main_history'))) AS on_main,
  row_number() OVER (PARTITION BY h.id,m.value->>'system' ORDER BY (c.body->>'revision'=r.body->>'main' OR c.body->>'revision' IN (SELECT value FROM json_each(r.body,'$.main_history'))) DESC,julianday(c.body->>'created'),c.body->>'revision') AS ordinal
  FROM hosts h JOIN repositories r ON r.id=h.body->>'repository' JOIN commits c ON c.body->>'repository'=h.body->>'repository'
  JOIN json_each(c.body,'$.mappings') m
@@ -83,7 +86,7 @@ func (s *Store) Fleet(ctx context.Context) (FleetState, error) {
 		var id, path string
 		var raw []byte
 		var c UICommit
-		if err = rows.Scan(&id, &path, &raw); err != nil {
+		if err = rows.Scan(&id, &path, &raw, &c.OffBranch); err != nil {
 			rows.Close()
 			return out, err
 		}
@@ -116,26 +119,30 @@ type ComparisonPair struct {
 	After  string `json:"after"`
 }
 type TimelinePage struct {
-	Host       Host            `json:"host"`
-	Entries    []TimelineEntry `json:"entries"`
-	Staged     string          `json:"staged"`
-	Unknown    bool            `json:"unknown"`
-	Comparison ComparisonPair  `json:"comparison"`
-	Attempt    *api.Result     `json:"attempt,omitempty"`
-	NextCursor string          `json:"next_cursor"`
-	Version    string          `json:"version"`
+	Host          Host            `json:"host"`
+	Entries       []TimelineEntry `json:"entries"`
+	Staged        string          `json:"staged"`
+	Unknown       bool            `json:"unknown"`
+	UnknownStaged bool            `json:"unknown_staged"`
+	Comparison    ComparisonPair  `json:"comparison"`
+	Attempt       *api.Result     `json:"attempt,omitempty"`
+	NextCursor    string          `json:"next_cursor"`
+	Version       string          `json:"version"`
 }
 
 var errCursor = errors.New("timeline changed; reload the first page")
 var errBadCursor = errors.New("invalid timeline cursor")
 
-func timelinePage(h Host, history []TimelineEntry, cursor string) (TimelinePage, error) {
+func timelinePage(h Host, history []TimelineEntry, cursor string, selected ...string) (TimelinePage, error) {
 	p := TimelinePage{Host: h, Entries: []TimelineEntry{}, Unknown: true}
 	if h.ProfileSystem != "" && h.ProfileSystem != h.Observation.Active {
 		p.Staged = h.ProfileSystem
 	} else if h.StagedCurrent {
 		p.Staged = h.Staged
+	} else if h.ProfileSystem == "" && h.Observation.Profile != h.Observation.Active {
+		p.Staged = h.Observation.Profile
 	}
+	p.UnknownStaged = p.Staged != ""
 	raw, _ := json.Marshal(struct {
 		Host, Live, Staged string
 		Entries            []TimelineEntry
@@ -144,6 +151,9 @@ func timelinePage(h Host, history []TimelineEntry, cursor string) (TimelinePage,
 	main := []TimelineEntry{}
 	live := -1
 	for i, e := range history {
+		if e.Path == p.Staged {
+			p.UnknownStaged = false
+		}
 		if e.Path == h.Observation.Active {
 			live = i
 			p.Unknown = false
@@ -154,7 +164,7 @@ func timelinePage(h Host, history []TimelineEntry, cursor string) (TimelinePage,
 	}
 	if len(main) > 0 {
 		p.Comparison = ComparisonPair{h.Observation.Active, main[0].Path}
-		if h.Observation.Active == main[0].Path {
+		if p.Unknown || p.UnknownStaged || h.Observation.Active == main[0].Path {
 			p.Comparison.Before = ""
 			if len(main) > 1 {
 				p.Comparison.Before = main[1].Path
@@ -175,7 +185,21 @@ func timelinePage(h Host, history []TimelineEntry, cursor string) (TimelinePage,
 	}
 	offset := 0
 	if cursor == "" {
-		p.Entries = initial
+		for i, e := range remaining {
+			for _, path := range selected {
+				if e.Path == path {
+					offset = max(offset, i+1)
+				}
+			}
+		}
+		p.Entries = append(initial, remaining[:offset]...)
+		sort.Slice(p.Entries, func(i, j int) bool {
+			a, b := p.Entries[i].Commit, p.Entries[j].Commit
+			if a.Created.Equal(b.Created) {
+				return a.Revision > b.Revision
+			}
+			return a.Created.After(b.Created)
+		})
 	} else {
 		var c struct {
 			Version string
@@ -205,7 +229,7 @@ func timelinePage(h Host, history []TimelineEntry, cursor string) (TimelinePage,
 	}
 	return p, nil
 }
-func (s *Store) HostTimeline(ctx context.Context, id, cursor string) (TimelinePage, error) {
+func (s *Store) HostTimeline(ctx context.Context, id, cursor string, selected ...string) (TimelinePage, error) {
 	var h Host
 	var repo Repository
 	var p TimelinePage
@@ -273,13 +297,13 @@ func (s *Store) HostTimeline(ctx context.Context, id, cursor string) (TimelinePa
 		}
 		return a.Created.After(b.Created)
 	})
-	p, err = timelinePage(h, history, cursor)
+	p, err = timelinePage(h, history, cursor, selected...)
 	if err != nil {
 		return p, err
 	}
 	if h.Status == "Deploy failed" || h.Status == "Deployment queued" {
 		var result []byte
-		err = tx.QueryRowContext(ctx, `SELECT body->'result' FROM jobs WHERE body->>'host'=$1 AND COALESCE(body->>'superseded',0)=0 AND json_extract(body,'$.result') IS NOT NULL
+		err = tx.QueryRowContext(ctx, `SELECT body->'result' FROM jobs WHERE body->>'host'=$1 AND COALESCE(body->>'kind','')!='reboot' AND COALESCE(body->>'superseded',0)=0 AND json_extract(body,'$.result') IS NOT NULL
   AND ((body->>'system'=$2 AND body->>'activation'=$3) OR json_extract(body,'$.result.outcome')='ambiguous') ORDER BY julianday(json_extract(body,'$.result.finished')) DESC LIMIT 1`, id, h.Desired, h.Activation).Scan(&result)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return p, err
