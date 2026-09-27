@@ -26,6 +26,11 @@ const diffKey = (old, next) => JSON.stringify([old, next]);
 let state,
   repository = "",
   renderID = 0;
+try { repository = localStorage.getItem("infra.repository") || ""; } catch {}
+function rememberRepository() {
+  if (!repository) return;
+  try { localStorage.setItem("infra.repository", repository); } catch {}
+}
 const age = (t) => {
   if (!t || t.startsWith("0001")) return "Not seen yet";
   const seconds = Math.max(0, (Date.now() - new Date(t)) / 1000);
@@ -455,6 +460,7 @@ async function draw() {
     compare: () => commitComparisonView(id),
   };
   $("#app").innerHTML = (renderers[route] || fleet)();
+  rememberRepository();
   animateTimeline();
   updateComparisonScroll();
   const switches = $("#repository-switches");
@@ -467,6 +473,7 @@ document.addEventListener("click", async (e) => {
   const tab = e.target.closest("[data-repository]");
   if (tab) {
     repository = tab.dataset.repository;
+    rememberRepository();
     if (location.pathname !== "/") history.pushState({}, "", "/");
     refresh();
     return;
