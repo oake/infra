@@ -297,8 +297,8 @@ func TestForcePushConfigurationIdentityAndVisibility(t *testing.T) {
 	for _, entry := range page.Entries {
 		switch entry.Path {
 		case p1:
-			if entry.Commit.Revision != revisions[0] || entry.OffBranch {
-				t.Fatal("unchanged rewrite replaced original provenance", entry)
+			if entry.Commit.Revision != revisions[1] || entry.OffBranch {
+				t.Fatal("configuration did not prefer current main provenance", entry)
 			}
 			if fleet.Hosts[host].Configurations[p1] != entry.Commit {
 				t.Fatal("homepage and timeline disagree")

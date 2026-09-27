@@ -38,13 +38,20 @@ func TestFirstConfigurationIgnoresLaterUnchangedCommits(t *testing.T) {
 	if first == nil || first.Revision != testPrior {
 		t.Fatalf("wrong introduction: %+v", first)
 	}
-	// Arrival order does not define the first commit; Git commit date does.
+	// An older branch commit must not replace main provenance. Once it is
+	// part of current main history, its earlier date takes precedence.
 	earlier := *first
 	earlier.ID = "earlier"
 	earlier.Revision = api.ID("earlier")[:40]
 	earlier.Created = first.Created.Add(-time.Hour)
 	earlier.Title = "Initial configuration"
 	s.Commits[earlier.ID] = earlier
+	if got := firstConfiguration(t, s, h.ID, h.Observation.Active); got.ID != first.ID {
+		t.Fatal("off-main commit replaced main provenance")
+	}
+	repo := s.Repositories[h.Repository]
+	repo.MainHistory = append(repo.MainHistory, earlier.Revision)
+	s.Repositories[h.Repository] = repo
 	if got := firstConfiguration(t, s, h.ID, h.Observation.Active); got.ID != earlier.ID {
 		t.Fatal("late historical mapping did not update origin")
 	}
