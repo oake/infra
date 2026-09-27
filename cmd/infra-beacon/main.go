@@ -16,6 +16,7 @@ func main() {
 	hub := flag.String("hub", os.Getenv("INFRA_HUB_URL"), "hub HTTPS URL")
 	host := flag.String("host", os.Getenv("INFRA_HOST"), "repository-qualified host ID")
 	tokenFile := flag.String("token-file", os.Getenv("INFRA_TOKEN_FILE"), "bearer token file for Traefik (or INFRA_TOKEN)")
+	state := flag.String("state", "/var/lib/infra-beacon/receipt.json", "last successfully delivered observation")
 	flag.Parse()
 	if *host == "" {
 		log.Fatal("host is required")
@@ -34,7 +35,9 @@ func main() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if e = c.Do(ctx, "POST", "/api/beacon", b, nil); e != nil {
+	if e = beacon.Report(*state, b, func() error {
+		return c.Do(ctx, "POST", "/api/beacon", b, nil)
+	}); e != nil {
 		log.Fatal(e)
 	}
 }

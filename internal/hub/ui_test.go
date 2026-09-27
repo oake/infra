@@ -250,3 +250,86 @@ func TestCommitComparisonBatchesAndDeduplicatesComparisons(t *testing.T) {
 		}
 	}
 }
+
+func TestForcePushConfigurationIdentityAndVisibility(t *testing.T) {
+	store := testStore(t)
+	state := NewState()
+	repo, host := "a/b", "a/b/host"
+	p1, p2, p3, p4 := testPath("same"), testPath("staged"), testPath("latest"), testPath("discarded")
+	revisions := []string{}
+	for i, path := range []string{p1, p1, p2, p3, p4} {
+		rev := fmt.Sprintf("%040d", i+1)
+		revisions = append(revisions, rev)
+		key := api.ID(repo, rev)
+		state.Commits[key] = Commit{ID: key, Repository: repo, Revision: rev, Title: fmt.Sprint("commit ", i+1), Created: time.Date(2026, 1, i+1, 0, 0, 0, 0, time.UTC), Branch: "main", Mappings: []api.Mapping{{Host: host, System: path}}}
+	}
+	state.Repositories[repo] = Repository{ID: repo}
+	history := GitHistory{Main: revisions[3], MainHistory: []string{revisions[3], revisions[1]}, Commits: map[string]UICommit{}}
+	for _, rev := range history.MainHistory {
+		c := state.Commits[api.ID(repo, rev)]
+		history.Commits[rev] = UICommit{Repository: repo, Revision: rev, Title: c.Title, Created: c.Created, Branch: "main"}
+	}
+	if err := state.ApplyGit(repo, history, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if state.Commits[api.ID(repo, revisions[2])].Branch != "" {
+		t.Fatal("removed commit retained main label")
+	}
+	state.Hosts[host] = Host{ID: host, Repository: repo, Observation: api.Beacon{Active: p1}, ProfileSystem: p2, Desired: p3}
+	save := func() {
+		t.Helper()
+		if err := store.Update(t.Context(), func(dst *State) error { *dst = *state; return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save()
+	fleet, err := store.Fleet(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := store.HostTimeline(t.Context(), host, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 3 {
+		t.Fatalf("wrong visible configurations: %+v", page.Entries)
+	}
+	for _, entry := range page.Entries {
+		switch entry.Path {
+		case p1:
+			if entry.Commit.Revision != revisions[0] || entry.OffBranch {
+				t.Fatal("unchanged rewrite replaced original provenance", entry)
+			}
+			if fleet.Hosts[host].Configurations[p1] != entry.Commit {
+				t.Fatal("homepage and timeline disagree")
+			}
+		case p2:
+			if !entry.OffBranch {
+				t.Fatal("staged configuration no longer on main lacks warning")
+			}
+		case p3:
+			if entry.Commit.Revision != revisions[3] {
+				t.Fatal("changed configuration lost new commit")
+			}
+		default:
+			t.Fatal("unobserved force-pushed configuration leaked")
+		}
+	}
+	h := state.Hosts[host]
+	h.Observation.Active = p3
+	h.ProfileSystem = ""
+	state.Hosts[host] = h
+	save()
+	page, err = store.HostTimeline(t.Context(), host, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 2 {
+		t.Fatalf("obsolete staged configuration retained: %+v", page.Entries)
+	}
+	for _, entry := range page.Entries {
+		if entry.Path == p2 || entry.Path == p4 {
+			t.Fatal("non-main configuration survived without Live/staged pin")
+		}
+	}
+}

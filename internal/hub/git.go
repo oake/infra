@@ -173,13 +173,18 @@ func (st *State) ApplyGit(repo string, history GitHistory, now time.Time) error 
 	if !ok {
 		return fmt.Errorf("unknown repository")
 	}
+	// Branch membership is a current Git fact, not permanent commit metadata.
+	for id, c := range st.Commits {
+		if c.Repository == repo {
+			c.Branch = history.Commits[c.Revision].Branch
+			st.Commits[id] = c
+		}
+	}
 	for rev, meta := range history.Commits {
 		id := api.ID(repo, rev)
 		c := st.Commits[id]
 		c.ID, c.Repository, c.Revision, c.Title, c.Created = id, repo, rev, meta.Title, meta.Created
-		if meta.Branch != "" {
-			c.Branch = meta.Branch
-		}
+		c.Branch = meta.Branch
 		if c.Evaluation == "" {
 			c.Evaluation = "pending"
 		}

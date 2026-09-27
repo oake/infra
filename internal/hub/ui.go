@@ -235,16 +235,16 @@ func (s *Store) HostTimeline(ctx context.Context, id, cursor string) (TimelinePa
 		staged = h.Staged
 	}
 	main := append(repo.MainHistory, repo.Main)
-	// Restrict to this host and main ancestry, with only observed branch exceptions.
-	// Prefer main provenance for shared paths; retain the first introducing commit.
+	// Visibility follows configuration paths on main, plus Live/staged paths.
+	// Their title/date always comes from the oldest known introducing commit,
+	// including a commit replaced by a force push that kept the same path.
 	rows, err := tx.QueryContext(ctx, `SELECT path,body,NOT on_main FROM (
- SELECT *,row_number() OVER (PARTITION BY path ORDER BY on_main DESC,julianday(body->>'created'),body->>'revision') AS ordinal FROM (
  SELECT m.value->>'system' AS path,json_remove(c.body,'$.mappings') AS body,
- c.body->>'revision' IN (SELECT value FROM json_each($3)) AS on_main
+ max(c.body->>'revision' IN (SELECT value FROM json_each($3))) OVER (PARTITION BY m.value->>'system') AS on_main,
+ row_number() OVER (PARTITION BY m.value->>'system' ORDER BY julianday(c.body->>'created'),c.body->>'revision') AS ordinal
  FROM commits c JOIN json_each(c.body,'$.mappings') m
  WHERE c.body->>'repository'=$1 AND m.value->>'host'=$2
- AND (c.body->>'revision' IN (SELECT value FROM json_each($3)) OR m.value->>'system' IN (SELECT value FROM json_each($4)))
- )) WHERE ordinal=1`, h.Repository, id, jsonStrings(main), jsonStrings([]string{h.Observation.Active, staged}))
+ ) WHERE ordinal=1 AND (on_main OR path IN (SELECT value FROM json_each($4)))`, h.Repository, id, jsonStrings(main), jsonStrings([]string{h.Observation.Active, staged}))
 	if err != nil {
 		return p, err
 	}
