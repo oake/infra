@@ -181,8 +181,11 @@ func startRunner(t *testing.T, c *api.Client, interval time.Duration, concurrenc
 func TestRunFourSlotsAndImmediateRefill(t *testing.T) {
 	h, c := newRunnerHub(t)
 	gates := map[string]chan struct{}{}
-	for _, id := range []string{"one", "two", "three", "four", "five"} {
+	for i, id := range []string{"one", "two", "three", "four", "five"} {
 		h.add(id, id)
+		job := h.jobs[id]
+		job.Created = time.Unix(int64(i), 0)
+		h.jobs[id] = job
 		gates[id] = make(chan struct{})
 	}
 	started := make(chan string, 10)
@@ -199,7 +202,7 @@ func TestRunFourSlotsAndImmediateRefill(t *testing.T) {
 		first[receive(t, started)] = true
 	}
 	if first["five"] {
-		t.Fatal("queue order not respected")
+		t.Fatalf("queue order not respected: %v", first)
 	}
 	select {
 	case id := <-started:

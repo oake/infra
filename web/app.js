@@ -78,8 +78,11 @@ const badge = (s, t = tone(s)) =>
   `<span class="badge ${esc(t)} ${busyStatus(s) ? "badge-busy" : ""}">${esc(statusLabel(s))}</span>`;
 const hostStatusBadge = h => {
   const reboot = h.status === "Reboot to apply" && h.platform !== "darwin";
-  if (h.status !== "Paused" && !reboot) return badge(h.status);
-  return `<button class="badge unpause-action ${reboot ? "purple" : ""}" data-action="${reboot ? "reboot" : "deploy"}" data-host="${esc(h.id)}" aria-label="${reboot ? "Reboot now" : "Unpause deployment"}"><span class="paused-label">${esc(h.status)}</span><span class="unpause-label" aria-hidden="true">${reboot ? "Reboot now" : "Unpause"}</span></button>`;
+  const retry = h.status === "Deploy failed";
+  if (h.status !== "Paused" && !reboot && !retry) return badge(h.status);
+  const action = retry ? "retry" : reboot ? "reboot" : "deploy";
+  const label = retry ? "Retry deploy" : reboot ? "Reboot now" : "Unpause deployment";
+  return `<button class="badge unpause-action ${reboot ? "purple" : retry ? "red" : ""}" data-action="${action}" data-host="${esc(h.id)}" aria-label="${label}"><span class="paused-label">${esc(h.status)}</span><span class="unpause-label" aria-hidden="true">${retry ? "Retry deploy" : reboot ? "Reboot now" : "Unpause"}</span></button>`;
 };
 const stagedBadge = h => ["Reboot to apply", "Reboot queued"].includes(h.status) ? hostStatusBadge(h) : badge("Reboot to apply");
 
@@ -532,7 +535,7 @@ document.addEventListener("click", async (e) => {
     target.disabled = true;
     const previousHTML = target.innerHTML;
     const previousClass = target.className;
-    if (action === "deploy" || action === "reboot") {
+    if (action === "deploy" || action === "retry" || action === "reboot") {
       target.className = `badge badge-busy ${action === "reboot" ? "purple" : ""}`;
       target.textContent = action === "reboot" ? "Rebooting" : "Deploying";
       target.setAttribute("aria-label", target.textContent);
@@ -548,6 +551,7 @@ document.addEventListener("click", async (e) => {
       target.className = previousClass;
       if (action === "reboot") target.setAttribute("aria-label", "Reboot now");
       if (action === "deploy") target.setAttribute("aria-label", "Unpause deployment");
+      if (action === "retry") target.setAttribute("aria-label", "Retry deploy");
       target.disabled = false;
     }
     return;

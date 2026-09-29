@@ -100,6 +100,7 @@ func TestHTTPRepositoryJobSelection(t *testing.T) {
 	// Make a second repository eligible without relying on a named runner.
 	h := s.Hosts["example/secondary/staged"]
 	h.Staged = ""
+	h.Observation.Profile = h.Observation.Active
 	s.Hosts[h.ID] = h
 	s.Reconcile(now)
 	if err := store.Update(t.Context(), func(dst *State) error { *dst = *s; return nil }); err != nil {

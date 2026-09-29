@@ -575,6 +575,7 @@ main { min-height: 100%; }
 .unpause-action:hover, .unpause-action:focus-visible { box-shadow: inset 0 0 0 1px currentColor; }
 .unpause-action:hover { background: #f3f2f1; }
 .unpause-action.purple:hover { background: #efdfed; }
+.unpause-action.red:hover { background: #f6d7d2; }
 .unpause-action > span { grid-area: 1 / 1; }
 .unpause-action .unpause-label { visibility: hidden; }
 .unpause-action:hover .paused-label, .unpause-action:focus-visible .paused-label { visibility: hidden; }

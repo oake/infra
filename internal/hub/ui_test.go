@@ -126,7 +126,7 @@ func TestScopedUIEndpoints(t *testing.T) {
 	if strings.Contains(w.Body.String(), "main_history") {
 		t.Fatal("fleet leaks full main ancestry")
 	}
-	w = get("/api/ui/hosts/" + url.PathEscape(h.ID) + "/timeline")
+	w = get("/api/ui/hosts/a/b/host/timeline")
 	var page TimelinePage
 	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
 		t.Fatal(err)
@@ -146,7 +146,7 @@ func TestScopedUIEndpoints(t *testing.T) {
 	if exceptions != 2 || len(page.Entries) != 3 {
 		t.Fatalf("wrong initial window: %+v", page)
 	}
-	w = get("/api/ui/hosts/" + url.PathEscape(h.ID) + "/timeline?cursor=" + url.QueryEscape(page.NextCursor))
+	w = get("/api/ui/hosts/a/b/host/timeline?cursor=" + url.QueryEscape(page.NextCursor))
 	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
 		t.Fatal(err)
 	}

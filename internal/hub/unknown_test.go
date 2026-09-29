@@ -3,7 +3,6 @@ package hub
 import (
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +34,7 @@ func TestUnknownConfigurationRequiresExplicitDeployment(t *testing.T) {
 	handler := (&Server{Store: store}).Handler(http.NotFoundHandler())
 	call := func(id string) int {
 		w := httptest.NewRecorder()
-		r := httptest.NewRequest("POST", "http://hub.test/api/ui/hosts/"+url.PathEscape(id)+"/deploy", strings.NewReader("{}"))
+		r := httptest.NewRequest("POST", "http://hub.test/api/ui/hosts/"+id+"/deploy", strings.NewReader("{}"))
 		r.Header.Set("Origin", "http://hub.test")
 		handler.ServeHTTP(w, r)
 		return w.Code
