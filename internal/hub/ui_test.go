@@ -333,3 +333,66 @@ func TestForcePushConfigurationIdentityAndVisibility(t *testing.T) {
 		}
 	}
 }
+
+func TestConfigurationProvenanceFollowsReorderedMain(t *testing.T) {
+	for _, equalDates := range []bool{false, true} {
+		t.Run(fmt.Sprintf("equal_dates=%t", equalDates), func(t *testing.T) {
+			store := testStore(t)
+			state := NewState()
+			repo, host := "a/b", "a/b/host"
+			path := testPath("same")
+			revisions := []string{fmt.Sprintf("%040d", 1), fmt.Sprintf("%040d", 2), fmt.Sprintf("%040d", 3)}
+			for i, rev := range revisions {
+				date := time.Date(2026, 1, i+1, 0, 0, 0, 0, time.UTC)
+				if equalDates {
+					date = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+				}
+				state.Commits[api.ID(repo, rev)] = Commit{Repository: repo, Revision: rev, Created: date, Mappings: []api.Mapping{{Host: host, System: path}}}
+			}
+			state.Hosts[host] = Host{ID: host, Repository: repo, Observation: api.Beacon{Active: path}, Desired: path}
+			check := func(history []string, want string, offBranch bool) {
+				t.Helper()
+				r := Repository{ID: repo, MainHistory: history}
+				if len(history) > 0 {
+					r.Main = history[0]
+				}
+				state.Repositories[repo] = r
+				if err := store.Update(t.Context(), func(dst *State) error { *dst = *state; return nil }); err != nil {
+					t.Fatal(err)
+				}
+				fleet, err := store.Fleet(t.Context())
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := fleet.Hosts[host].Configurations[path]
+				if got.Revision != want || got.OffBranch != offBranch {
+					t.Fatalf("fleet provenance: got %+v, want %s offBranch=%t", got, want, offBranch)
+				}
+				page, err := store.HostTimeline(t.Context(), host, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(page.Entries) != 1 || page.Entries[0].Commit.Revision != want || page.Entries[0].OffBranch != offBranch {
+					t.Fatalf("timeline provenance: got %+v, want %s offBranch=%t", page.Entries, want, offBranch)
+				}
+			}
+			// Initially the oldest date/hash also happens to be first in ancestry.
+			check([]string{revisions[2], revisions[1], revisions[0]}, revisions[0], false)
+			// A force-push reorders history; dates and hashes stay the same.
+			check([]string{revisions[2], revisions[0], revisions[1]}, revisions[1], false)
+			// Removed commits must not win even if they have older dates/hashes.
+			check([]string{revisions[2]}, revisions[2], false)
+			// Without main provenance, retain the oldest known off-main fallback.
+			check(nil, revisions[0], true)
+			// Main may be known before its complete ancestry is available.
+			state.Repositories[repo] = Repository{ID: repo, Main: revisions[2]}
+			if err := store.Update(t.Context(), func(dst *State) error { *dst = *state; return nil }); err != nil {
+				t.Fatal(err)
+			}
+			fleet, err := store.Fleet(t.Context())
+			if err != nil || fleet.Hosts[host].Configurations[path].Revision != revisions[2] {
+				t.Fatalf("main-only provenance: %+v, %v", fleet, err)
+			}
+		})
+	}
+}

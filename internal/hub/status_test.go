@@ -39,7 +39,7 @@ func TestFirstConfigurationIgnoresLaterUnchangedCommits(t *testing.T) {
 		t.Fatalf("wrong introduction: %+v", first)
 	}
 	// An older branch commit must not replace main provenance. Once it is
-	// part of current main history, its earlier date takes precedence.
+	// the earliest entry in current main history, its ancestry takes precedence.
 	earlier := *first
 	earlier.ID = "earlier"
 	earlier.Revision = api.ID("earlier")[:40]

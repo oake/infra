@@ -69,11 +69,13 @@ func (s *Store) Fleet(ctx context.Context) (FleetState, error) {
 	if out.PullRequests, err = readUIRows[PullRequest](ctx, tx, "SELECT id,body FROM pull_requests"); err != nil {
 		return out, err
 	}
-	// Only provenance for the two paths displayed in each fleet row.
+	// Only provenance for the two paths displayed in each fleet row. MainHistory
+	// is newest first: the largest ancestry index introduces a path earliest.
+	// Dates only choose provenance when the path has no known main mapping.
 	rows, err := tx.QueryContext(ctx, `SELECT host,path,body,NOT on_main FROM (
  SELECT h.id AS host,m.value->>'system' AS path,json_remove(c.body,'$.mappings') AS body,
  (c.body->>'revision'=r.body->>'main' OR c.body->>'revision' IN (SELECT value FROM json_each(r.body,'$.main_history'))) AS on_main,
- row_number() OVER (PARTITION BY h.id,m.value->>'system' ORDER BY (c.body->>'revision'=r.body->>'main' OR c.body->>'revision' IN (SELECT value FROM json_each(r.body,'$.main_history'))) DESC,julianday(c.body->>'created'),c.body->>'revision') AS ordinal
+ row_number() OVER (PARTITION BY h.id,m.value->>'system' ORDER BY (c.body->>'revision'=r.body->>'main' OR c.body->>'revision' IN (SELECT value FROM json_each(r.body,'$.main_history'))) DESC,COALESCE((SELECT min(CAST(key AS INTEGER)) FROM json_each(r.body,'$.main_history') WHERE value=c.body->>'revision'),-1) DESC,julianday(c.body->>'created'),c.body->>'revision') AS ordinal
  FROM hosts h JOIN repositories r ON r.id=h.body->>'repository' JOIN commits c ON c.body->>'repository'=h.body->>'repository'
  JOIN json_each(c.body,'$.mappings') m
  WHERE m.value->>'host'=h.id
@@ -258,14 +260,14 @@ func (s *Store) HostTimeline(ctx context.Context, id, cursor string, selected ..
 	if staged == "" && h.StagedCurrent {
 		staged = h.Staged
 	}
-	main := append(repo.MainHistory, repo.Main)
+	main := append([]string{repo.Main}, repo.MainHistory...)
 	// Visibility follows configuration paths on main, plus Live/staged paths.
-	// Prefer the oldest introducing commit on current main; use other branches
+	// Prefer the earliest introducing commit by current main ancestry; use other branches
 	// only for Live/staged configurations with no main provenance.
 	rows, err := tx.QueryContext(ctx, `SELECT path,body,NOT on_main FROM (
  SELECT m.value->>'system' AS path,json_remove(c.body,'$.mappings') AS body,
  max(c.body->>'revision' IN (SELECT value FROM json_each($3))) OVER (PARTITION BY m.value->>'system') AS on_main,
- row_number() OVER (PARTITION BY m.value->>'system' ORDER BY (c.body->>'revision' IN (SELECT value FROM json_each($3))) DESC,julianday(c.body->>'created'),c.body->>'revision') AS ordinal
+ row_number() OVER (PARTITION BY m.value->>'system' ORDER BY (c.body->>'revision' IN (SELECT value FROM json_each($3))) DESC,COALESCE((SELECT min(CAST(key AS INTEGER)) FROM json_each($3) WHERE value=c.body->>'revision'),-1) DESC,julianday(c.body->>'created'),c.body->>'revision') AS ordinal
  FROM commits c JOIN json_each(c.body,'$.mappings') m
  WHERE c.body->>'repository'=$1 AND m.value->>'host'=$2
  ) WHERE ordinal=1 AND (on_main OR path IN (SELECT value FROM json_each($4)))`, h.Repository, id, jsonStrings(main), jsonStrings([]string{h.Observation.Active, staged}))
