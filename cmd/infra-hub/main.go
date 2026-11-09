@@ -27,7 +27,6 @@ func run() error {
 	port := flag.Int("http-port", 8787, "HTTP port (listens on 0.0.0.0)")
 	data := flag.String("data", "/var/lib/infra-hub", "state directory")
 	inbox := flag.String("inbox", "", "Buildbot inbox directory (defaults to DATA/inbox)")
-	dix := flag.String("dix", "dix", "dix snapshot-capable executable")
 	oaiTokenFile := flag.String("oai-token-file", "", "OpenAI API token file")
 	oaiBaseURL := flag.String("oai-base-url", "https://api.openai.com/v1", "OpenAI API base URL")
 	flag.Parse()
@@ -42,7 +41,12 @@ func run() error {
 		return e
 	}
 	defer store.DB.Close()
-	server := &hub.Server{Store: store, Root: *data, Dix: *dix}
+	server := &hub.Server{Store: store, Root: *data}
+	// Before the inbox and HTTP start, so nothing reads half-migrated state. A
+	// failed migration must not stop the hub: deployments of a fix depend on it.
+	if e := server.MigrateSnapshots(ctx); e != nil {
+		slog.Error("snapshot migration", "error", e)
+	}
 	if *oaiTokenFile != "" {
 		token, err := os.ReadFile(*oaiTokenFile)
 		if err != nil {

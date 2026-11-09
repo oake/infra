@@ -103,7 +103,8 @@ func TestScopedUIEndpoints(t *testing.T) {
 	if err := store.Update(t.Context(), func(dst *State) error { *dst = *s; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	handler := (&Server{Store: store, Dix: testDix(t)}).Handler(http.NotFoundHandler())
+	testDix(t)
+	handler := (&Server{Store: store}).Handler(http.NotFoundHandler())
 	get := func(path string) *httptest.ResponseRecorder {
 		t.Helper()
 		w := httptest.NewRecorder()
@@ -166,7 +167,7 @@ func TestCommitComparisonBatchesAndDeduplicatesComparisons(t *testing.T) {
 	s.PullRequests[p.ID] = p
 	s.Repositories[repo] = Repository{ID: repo, Main: strings.Repeat("c", 40)}
 	for _, path := range []string{old, next} {
-		snapshot := api.Snapshot{Schema: 1, Root: path, Closure: []api.SnapshotPath{{Path: path, Size: 12}}, Selected: []string{}}
+		snapshot := api.Snapshot{Version: 1, Root: path, Closure: []api.SnapshotPath{{Path: path, Size: 12}}, Selected: []string{}}
 		id, err := writeSnapshot(root, snapshot)
 		if err != nil {
 			t.Fatal(err)
@@ -191,7 +192,8 @@ func TestCommitComparisonBatchesAndDeduplicatesComparisons(t *testing.T) {
 	if err := store.Update(t.Context(), func(dst *State) error { *dst = *s; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	server := &Server{Store: store, Root: root, Dix: testDix(t)}
+	testDix(t)
+	server := &Server{Store: store, Root: root}
 	handler := server.Handler(http.NotFoundHandler())
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, httptest.NewRequest("GET", "/api/ui/compare/a/b/"+base+"/"+head, nil))

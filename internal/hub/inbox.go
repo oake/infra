@@ -21,25 +21,37 @@ type rejectedInput struct{ error }
 
 func reject(err error) error { return rejectedInput{err} }
 
-func readInboxJSON(path string, target any, limit int64) error {
+func readInboxFile(path string, limit int64) ([]byte, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !info.Mode().IsRegular() || info.Size() > limit {
-		return reject(errors.New("expected a bounded regular file"))
+		return nil, reject(errors.New("expected a bounded regular file"))
 	}
-	b, err := os.ReadFile(path)
+	return os.ReadFile(path)
+}
+
+// decodeStrict accepts exactly one JSON value without unknown fields.
+func decodeStrict(b []byte, target any) error {
+	d := json.NewDecoder(bytes.NewReader(b))
+	d.DisallowUnknownFields()
+	if err := d.Decode(target); err != nil {
+		return err
+	}
+	if err := d.Decode(new(any)); err != io.EOF {
+		return errors.New("expected one JSON value")
+	}
+	return nil
+}
+
+func readInboxJSON(path string, target any, limit int64) error {
+	b, err := readInboxFile(path, limit)
 	if err != nil {
 		return err
 	}
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.DisallowUnknownFields()
-	if err = d.Decode(target); err != nil {
+	if err = decodeStrict(b, target); err != nil {
 		return reject(err)
-	}
-	if err = d.Decode(new(any)); err != io.EOF {
-		return reject(errors.New("expected one JSON value"))
 	}
 	return nil
 }
@@ -143,9 +155,14 @@ func (s *Server) ingestEvent(ctx context.Context, path string) error {
 }
 
 func (s *Server) ingestSnapshot(ctx context.Context, path string) error {
-	var snapshot api.Snapshot
-	if err := readInboxJSON(path, &snapshot, 64<<20); err != nil {
+	raw, err := readInboxFile(path, 64<<20)
+	if err != nil {
 		return err
+	}
+	// Legacy snapshots can still arrive from a Buildbot that predates dix 3.
+	snapshot, legacy, err := parseSnapshot(raw)
+	if err != nil {
+		return reject(err)
 	}
 	if err := validateSnapshot(snapshot); err != nil {
 		return reject(err)
@@ -168,7 +185,12 @@ func (s *Server) ingestSnapshot(ctx context.Context, path string) error {
 		}
 		// Inbox and permanent storage share a filesystem. Link then unlink after the
 		// DB commit avoids copying and preserves a retryable input on DB failure.
-		if err := os.Link(path, filepath.Join(dir, id+".json")); err != nil && !os.IsExist(err) {
+		// dix 3 cannot read legacy snapshots, so those are stored converted.
+		if legacy {
+			if err := atomicWrite(filepath.Join(dir, id+".json"), b); err != nil {
+				return err
+			}
+		} else if err := os.Link(path, filepath.Join(dir, id+".json")); err != nil && !os.IsExist(err) {
 			return err
 		}
 		f, err := os.Open(dir)

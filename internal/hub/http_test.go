@@ -28,7 +28,8 @@ func TestSQLiteMachineAPIAndRollback(t *testing.T) {
 	if e := store.Update(t.Context(), func(dst *State) error { *dst = *s; return nil }); e != nil {
 		t.Fatal(e)
 	}
-	handler := (&Server{Store: store, Root: root, Dix: testDix(t)}).Handler(http.NotFoundHandler())
+	testDix(t)
+	handler := (&Server{Store: store, Root: root}).Handler(http.NotFoundHandler())
 	call := func(method, path string, b any) *httptest.ResponseRecorder {
 		var body bytes.Buffer
 		if b != nil {
@@ -106,7 +107,8 @@ func TestHTTPRepositoryJobSelection(t *testing.T) {
 	if err := store.Update(t.Context(), func(dst *State) error { *dst = *s; return nil }); err != nil {
 		t.Fatal(err)
 	}
-	handler := (&Server{Store: store, Root: root, Dix: testDix(t)}).Handler(http.NotFoundHandler())
+	testDix(t)
+	handler := (&Server{Store: store, Root: root}).Handler(http.NotFoundHandler())
 	for _, repo := range []string{"example/primary", "example/secondary"} {
 		req := httptest.NewRequest("GET", "/api/deployer/jobs?repository="+url.QueryEscape(repo), nil)
 		w := httptest.NewRecorder()

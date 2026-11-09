@@ -25,8 +25,6 @@ type Server struct {
 
 	Store *Store
 	Root  string
-
-	Dix string
 }
 
 func jsonResponse(w http.ResponseWriter, status int, v any) {
@@ -203,7 +201,7 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 			problem(w, 500, e)
 			return
 		}
-		c, e := compare(r.Context(), state, s.Root, s.Dix, q.Get("old"), q.Get("new"))
+		c, e := compare(r.Context(), state, s.Root, q.Get("old"), q.Get("new"))
 		if e != nil {
 			problem(w, 503, e)
 			return

@@ -185,7 +185,7 @@ func (s *Server) CompareCommits(ctx context.Context, repo, old, next string) (Co
 	for range min(4, len(pairs)) {
 		go func() {
 			for task := range work {
-				d, e := compare(ctx, state, s.Root, s.Dix, task.pair.Before, task.pair.After)
+				d, e := compare(ctx, state, s.Root, task.pair.Before, task.pair.After)
 				if e != nil {
 					d.Status = "error"
 					d.Error = e.Error()

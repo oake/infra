@@ -55,7 +55,7 @@ func fixture(t *testing.T) (*State, time.Time, string) {
 			a.Build = "success"
 			a.ReadyStatus = "success"
 			a.ReadyAt = now
-			snap, err := writeSnapshot(root, api.Snapshot{Schema: 1, Root: p, Closure: []api.SnapshotPath{{Path: p, Size: 1}}, Selected: []string{}})
+			snap, err := writeSnapshot(root, api.Snapshot{Version: 1, Root: p, Closure: []api.SnapshotPath{{Path: p, Size: 1}}, Selected: []string{}})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -127,18 +127,18 @@ func fixture(t *testing.T) (*State, time.Time, string) {
 	return s, now, root
 }
 
-// A subprocess stub tests the real dix execution/parser/cache path.
-func testDix(t *testing.T) string {
+// A subprocess stub on PATH tests the real dix execution/parser/cache path.
+func testDix(t *testing.T) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "dix")
+	dir := t.TempDir()
 	script := `#!/bin/sh
-[ "$1" = diff-snapshots ] && [ -f "$2" ] && [ -f "$3" ] && [ "$4" = --output ] && [ "$5" = json ] || exit 1
-printf '%s\n' '{"size_old":1,"size_new":2,"diffs":[{"name":"package","versions":[{"kind":"changed","old":{"name":"1"},"new":{"name":"2"}}]}]}'
+[ "$1" = diff ] && [ -f "$2" ] && [ -f "$3" ] && [ "$4" = --output ] && [ "$5" = json ] || exit 2
+printf '%s\n' '{"size_old":1,"size_new":2,"diffs":[{"name":"package","versions":[{"kind":"changed","old":{"name":"1","amount":1},"new":{"name":"2","amount":1}}]},{"name":"source","versions":[{"kind":"added","version":{"name":null,"amount":1}}]}]}'
 `
-	if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "dix"), []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
-	return path
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func outstanding(t *testing.T, state *State, repo string, now time.Time) []api.Job {

@@ -55,7 +55,8 @@ func TestObservationsAndArtifactReuse(t *testing.T) {
 	if a.Snapshot == "" {
 		t.Fatal("missing reusable snapshot")
 	}
-	d, e := compare(t.Context(), s, root, testDix(t), old, new)
+	testDix(t)
+	d, e := compare(t.Context(), s, root, old, new)
 	if e != nil || d.Status != "unchanged" {
 		t.Fatalf("unchanged comparison: %+v %v", d, e)
 	}
@@ -154,15 +155,19 @@ func TestObserveDesiredCancelsQueuedJob(t *testing.T) {
 func TestSnapshotValidationAndCanonicalReuse(t *testing.T) {
 	s, _, root := fixture(t)
 	h := s.Hosts["example/primary/offline"]
-	d, e := compare(t.Context(), s, root, testDix(t), h.Observation.Active, h.Desired)
-	if e != nil || d.Status != "different" || len(d.Packages) == 0 {
+	testDix(t)
+	d, e := compare(t.Context(), s, root, h.Observation.Active, h.Desired)
+	if e != nil || d.Status != "different" || len(d.Packages) != 2 {
 		t.Fatalf("actual to desired comparison: %+v %v", d, e)
 	}
-	unknown, e := compare(t.Context(), s, root, testDix(t), testPath("unknown"), h.Desired)
+	if p := d.Packages[1]; p.Name != "source" || p.Before != "" || p.After != "<none>" {
+		t.Fatalf("versionless package: %+v", p)
+	}
+	unknown, e := compare(t.Context(), s, root, testPath("unknown"), h.Desired)
 	if e != nil || unknown.Status != "unavailable" {
 		t.Fatal("unknown path synthesized snapshot")
 	}
-	snap := api.Snapshot{Schema: 1, Root: h.Desired, Closure: []api.SnapshotPath{{Path: h.Desired, Size: 1}}, Selected: []string{h.Desired}}
+	snap := api.Snapshot{Version: 1, Root: h.Desired, Closure: []api.SnapshotPath{{Path: h.Desired, Size: 1}}, Selected: []string{h.Desired}}
 	id, e := writeSnapshot(root, snap)
 	if e != nil {
 		t.Fatal(e)

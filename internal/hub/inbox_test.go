@@ -42,7 +42,7 @@ func TestInboxRestartOrderingRejectionAndSnapshots(t *testing.T) {
 	}
 	build := api.BuildEvent{ID: "built", Repository: repo, Revision: rev, Kind: "build", Status: "success", Artifact: path, ObservedAt: now}
 	write("1.event.json", build)
-	snapshot := api.Snapshot{Schema: 1, Root: path, Closure: []api.SnapshotPath{{Path: path, Size: 42}}, Selected: []string{}}
+	snapshot := api.Snapshot{Version: 1, Root: path, Closure: []api.SnapshotPath{{Path: path, Size: 42}}, Selected: []string{}}
 	write("2.snapshot.json", snapshot)
 	info, _ := os.Stat(filepath.Join(inbox, "2.snapshot.json"))
 	eval := api.BuildEvent{ID: "eval", Repository: repo, Revision: rev, Kind: "evaluation", Status: "success", Outputs: map[string]string{"checks.host": path}, Mappings: []api.Mapping{{Host: repo + "/host", System: path, Activation: path}}, ObservedAt: now}
@@ -161,7 +161,7 @@ func TestAutomaticEnrollmentAndUnknownInputsAreDiscarded(t *testing.T) {
 	before := len(state.Events)
 	write("unknown.event.json", api.BuildEvent{ID: "unknown", Repository: "other/repo", Revision: rev, Kind: "build", Status: "success", Artifact: path})
 	orphan := testPath("orphan")
-	write("unknown.snapshot.json", api.Snapshot{Schema: 1, Root: orphan, Closure: []api.SnapshotPath{{Path: orphan, Size: 1}}})
+	write("unknown.snapshot.json", api.Snapshot{Version: 1, Root: orphan, Closure: []api.SnapshotPath{{Path: orphan, Size: 1}}})
 	write("unrelated.event.json", api.BuildEvent{ID: "unrelated", Repository: "other/repo", Revision: rev, Kind: "evaluation", Status: "success"})
 	if err := server.ScanInbox(t.Context(), root); err != nil {
 		t.Fatal(err)

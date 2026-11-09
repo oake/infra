@@ -17,10 +17,11 @@ import (
 	"github.com/oake/infra/internal/api"
 )
 
-const Producer = "dix-69f91d6-schema1"
+// Producer names the snapshot format; it is part of every snapshot ID.
+const Producer = "dix-3-v1"
 
 func validateSnapshot(s api.Snapshot) error {
-	if s.Schema != 1 || !api.StorePath.MatchString(s.Root) {
+	if s.Version != 1 || !api.StorePath.MatchString(s.Root) {
 		return errors.New("invalid snapshot schema or root")
 	}
 	seen := map[string]bool{}
@@ -68,17 +69,26 @@ func atomicWrite(path string, data []byte) error {
 	}
 	return os.Rename(f.Name(), path)
 }
-func writeSnapshot(root string, s api.Snapshot) (string, error) {
+
+// encodeSnapshot validates and canonicalizes s, returning its content ID.
+func encodeSnapshot(s api.Snapshot) (string, []byte, error) {
 	if e := validateSnapshot(s); e != nil {
-		return "", e
+		return "", nil, e
 	}
 	sort.Slice(s.Closure, func(i, j int) bool { return s.Closure[i].Path < s.Closure[j].Path })
 	sort.Strings(s.Selected)
 	b, e := json.Marshal(s)
 	if e != nil {
+		return "", nil, e
+	}
+	return api.ID(Producer, string(b)), b, nil
+}
+
+func writeSnapshot(root string, s api.Snapshot) (string, error) {
+	id, b, e := encodeSnapshot(s)
+	if e != nil {
 		return "", e
 	}
-	id := api.ID(Producer, string(b))
 	return id, atomicWrite(filepath.Join(root, "snapshots", id+".json"), b)
 }
 
@@ -100,7 +110,7 @@ type Comparison struct {
 	Error        string        `json:"error,omitempty"`
 }
 
-func compare(ctx context.Context, s *State, root, dix string, old, next string) (Comparison, error) {
+func compare(ctx context.Context, s *State, root string, old, next string) (Comparison, error) {
 	c := Comparison{Old: old, New: next, Packages: []PackageDiff{}}
 	if old == next && old != "" {
 		c.Status = "unchanged"
@@ -112,7 +122,13 @@ func compare(ctx context.Context, s *State, root, dix string, old, next string) 
 		c.Status = "unavailable"
 		return c, nil
 	}
-	binary, err := exec.LookPath(dix)
+	dir := filepath.Join(root, "snapshots")
+	return diffSnapshots(ctx, c, root, a.Snapshot, filepath.Join(dir, a.Snapshot+".json"), b.Snapshot, filepath.Join(dir, b.Snapshot+".json"))
+}
+
+// diffSnapshots runs dix on two snapshot files, cached by their content IDs.
+func diffSnapshots(ctx context.Context, c Comparison, root, oldID, oldFile, newID, newFile string) (Comparison, error) {
+	binary, err := exec.LookPath("dix")
 	if err != nil {
 		return c, fmt.Errorf("dix unavailable: %w", err)
 	}
@@ -121,7 +137,7 @@ func compare(ctx context.Context, s *State, root, dix string, old, next string) 
 		return c, err
 	}
 	c.Engine = engine
-	key := api.ID(a.Snapshot, b.Snapshot, engine, "package-versions-v4")
+	key := api.ID(oldID, newID, engine, "package-versions-v5")
 	cache := filepath.Join(root, "diffs", key+".json")
 	release, err := lockDiff(ctx, cache)
 	if err != nil {
@@ -133,11 +149,9 @@ func compare(ctx context.Context, s *State, root, dix string, old, next string) 
 			return c, nil
 		}
 	}
-	oldFile := filepath.Join(root, "snapshots", a.Snapshot+".json")
-	newFile := filepath.Join(root, "snapshots", b.Snapshot+".json")
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, binary, "diff-snapshots", oldFile, newFile, "--output", "json")
+	cmd := exec.CommandContext(ctx, binary, "diff", oldFile, newFile, "--output", "json")
 	var out cappedBuffer
 	cmd.Stdout = &out
 	var stderr cappedBuffer
@@ -160,16 +174,16 @@ func compare(ctx context.Context, s *State, root, dix string, old, next string) 
 				OldAmount int    `json:"old_amount"`
 				NewAmount int    `json:"new_amount"`
 				Old       struct {
-					Name   string `json:"name"`
-					Amount int    `json:"amount"`
+					Name   *string `json:"name"`
+					Amount int     `json:"amount"`
 				} `json:"old"`
 				New struct {
-					Name   string `json:"name"`
-					Amount int    `json:"amount"`
+					Name   *string `json:"name"`
+					Amount int     `json:"amount"`
 				} `json:"new"`
 				Version struct {
-					Name   string `json:"name"`
-					Amount int    `json:"amount"`
+					Name   *string `json:"name"`
+					Amount int     `json:"amount"`
 				} `json:"version"`
 			} `json:"versions"`
 		} `json:"diffs"`
@@ -201,15 +215,15 @@ func compare(ctx context.Context, s *State, root, dix string, old, next string) 
 		for _, v := range d.Versions {
 			switch v.Kind {
 			case "changed":
-				p.Before += versionAmount(v.Old.Name, v.Old.Amount, false) + "\n"
-				p.After += versionAmount(v.New.Name, v.New.Amount, false) + "\n"
+				p.Before += versionAmount(versionName(v.Old.Name), v.Old.Amount, false) + "\n"
+				p.After += versionAmount(versionName(v.New.Name), v.New.Amount, false) + "\n"
 			case "added":
-				p.After += versionAmount(v.Version.Name, v.Version.Amount, false) + "\n"
+				p.After += versionAmount(versionName(v.Version.Name), v.Version.Amount, false) + "\n"
 			case "removed":
-				p.Before += versionAmount(v.Version.Name, v.Version.Amount, false) + "\n"
+				p.Before += versionAmount(versionName(v.Version.Name), v.Version.Amount, false) + "\n"
 			case "amount_changed":
-				p.Before += versionAmount(v.Version.Name, v.OldAmount, true) + "\n"
-				p.After += versionAmount(v.Version.Name, v.NewAmount, true) + "\n"
+				p.Before += versionAmount(versionName(v.Version.Name), v.OldAmount, true) + "\n"
+				p.After += versionAmount(versionName(v.Version.Name), v.NewAmount, true) + "\n"
 			}
 		}
 		p.Before, p.After = strings.TrimSpace(p.Before), strings.TrimSpace(p.After)
@@ -221,6 +235,14 @@ func compare(ctx context.Context, s *State, root, dix string, old, next string) 
 		return c, e
 	}
 	return c, atomicWrite(cache, data)
+}
+
+// dix reports packages without a version, like flake sources, as null.
+func versionName(name *string) string {
+	if name == nil {
+		return "<none>"
+	}
+	return *name
 }
 
 func versionAmount(name string, amount int, explicit bool) string {
@@ -236,8 +258,8 @@ func snapshotVersions(file string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var snapshot api.Snapshot
-	if err := json.Unmarshal(raw, &snapshot); err != nil {
+	snapshot, _, err := parseSnapshot(raw)
+	if err != nil {
 		return nil, err
 	}
 	versions := map[string]map[string]bool{}

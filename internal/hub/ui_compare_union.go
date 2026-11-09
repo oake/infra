@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +13,7 @@ import (
 // Like nix-diffs, All hosts compares unions of available matched snapshots.
 // Shared store paths and selected packages count once, not once per host.
 func unionSnapshots(snapshots []api.Snapshot) (api.Snapshot, error) {
-	result := api.Snapshot{Schema: 1, Closure: []api.SnapshotPath{}, Selected: []string{}}
+	result := api.Snapshot{Version: 1, Closure: []api.SnapshotPath{}, Selected: []string{}}
 	paths := map[string]int64{}
 	selected := map[string]bool{}
 	for _, s := range snapshots {
@@ -53,12 +52,12 @@ func (s *Server) combinedComparison(ctx context.Context, state *State, hosts []H
 		if snap, ok := loaded[id]; ok {
 			return snap, nil
 		}
-		var snap api.Snapshot
 		raw, err := os.ReadFile(filepath.Join(s.Root, "snapshots", id+".json"))
 		if err != nil {
-			return snap, err
+			return api.Snapshot{}, err
 		}
-		if err = json.Unmarshal(raw, &snap); err != nil {
+		snap, _, err := parseSnapshot(raw)
+		if err != nil {
 			return snap, err
 		}
 		loaded[id] = snap
@@ -88,29 +87,40 @@ func (s *Server) combinedComparison(ctx context.Context, state *State, hosts []H
 	if len(before) == 0 {
 		return result
 	}
-	unions := NewState()
-	keys := []string{}
+	fail := func(err error) Comparison {
+		result.Status = "error"
+		result.Error = err.Error()
+		return result
+	}
+	// Unions only feed dix, which reads files. The diff is cached by content
+	// ID, so the files are not kept.
+	tmp, err := os.MkdirTemp("", "infra-union-*")
+	if err != nil {
+		return fail(err)
+	}
+	defer os.RemoveAll(tmp)
+	ids, files := []string{}, []string{}
 	for _, snapshots := range [][]api.Snapshot{before, after} {
 		snapshot, err := unionSnapshots(snapshots)
 		if err != nil {
-			result.Status = "error"
-			result.Error = err.Error()
-			return result
+			return fail(err)
 		}
-		id, err := writeSnapshot(s.Root, snapshot)
+		id, b, err := encodeSnapshot(snapshot)
 		if err != nil {
-			result.Status = "error"
-			result.Error = err.Error()
-			return result
+			return fail(err)
 		}
-		// An aggregate is not a host system. Use its content identity to avoid the
-		// unchanged-system shortcut when other hosts changed but its root did not.
-		key := "union:" + id
-		keys = append(keys, key)
-		unions.Artifacts[key] = Artifact{Snapshot: id}
+		file := filepath.Join(tmp, id+".json")
+		if err = os.WriteFile(file, b, 0600); err != nil {
+			return fail(err)
+		}
+		ids, files = append(ids, id), append(files, file)
 	}
-	d, err := compare(ctx, unions, s.Root, s.Dix, keys[0], keys[1])
-	if err != nil {
+	// An aggregate is not a host system: its root can stay the same while other
+	// hosts change, so compare by content identity.
+	d := Comparison{Old: "union:" + ids[0], New: "union:" + ids[1], Packages: []PackageDiff{}}
+	if ids[0] == ids[1] {
+		d.Status = "unchanged"
+	} else if d, err = diffSnapshots(ctx, d, s.Root, ids[0], files[0], ids[1], files[1]); err != nil {
 		d.Status = "error"
 		d.Error = err.Error()
 	}

@@ -71,13 +71,15 @@ type BuildEvent struct {
 	Mappings          []Mapping         `json:"mappings,omitempty"`
 	Artifact          string            `json:"artifact,omitempty"`
 }
+
+// Snapshot is the closure document written by `dix snapshot` (dix >= 3.0).
 type Snapshot struct {
-	Schema   int            `json:"schema_version"`
-	Root     string         `json:"root"`
+	Version  int            `json:"version"`
+	Root     string         `json:"path"`
 	Closure  []SnapshotPath `json:"closure"`
 	Selected []string       `json:"selected"`
 }
 type SnapshotPath struct {
 	Path string `json:"path"`
-	Size int64  `json:"nar_size"`
+	Size int64  `json:"narSize"`
 }
