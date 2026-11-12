@@ -3,6 +3,7 @@ package web
 
 import (
 	"embed"
+	"encoding/base64"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -23,4 +24,10 @@ func Handler() http.Handler {
 		}
 		files.ServeHTTP(w, r)
 	})
+}
+
+// IconDataURI returns the UI snowflake as an SVG data URI.
+func IconDataURI() string {
+	b, _ := assets.ReadFile("nix.svg")
+	return "data:image/svg+xml;base64," + base64.StdEncoding.EncodeToString(b)
 }
