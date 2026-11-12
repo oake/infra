@@ -216,35 +216,10 @@ func (s *Server) Handler(static http.Handler) http.Handler {
 	ui.HandleFunc("POST /api/ui/hosts/{owner}/{repo}/{host}/{action}", func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("owner") + "/" + r.PathValue("repo") + "/" + r.PathValue("host")
 		action := r.PathValue("action")
-		s.mutation(w, r, func(state *State) error {
-			h, ok := state.Hosts[id]
-			if !ok {
-				return errors.New("unknown host")
-			}
-			switch action {
-			case "reboot":
-				return state.QueueReboot(id, time.Now().UTC())
-			case "deploy":
-				if !h.Automatic || h.Platform == "darwin" || state.configurationOnMain(h) || h.Desired == "" {
-					return errors.New("host is not outside main with a known deployment target")
-				}
-				h.DeploymentApproval = deploymentApproval(h)
-				state.Hosts[id] = h
-				fallthrough
-			case "retry":
-				for jid, j := range state.Jobs {
-					if j.Kind != "reboot" && j.Host == id && j.Result != nil && (j.Result.Outcome == "failed" || j.Result.Outcome == "ambiguous") {
-						j.Superseded = true
-						state.Jobs[jid] = j
-					}
-				}
-			default:
-				return errors.New("unknown action")
-			}
-			return nil
-		})
+		s.mutation(w, r, func(state *State) error { return state.hostAction(id, action) })
 	})
 	mux.Handle("/api/ui/", ui)
+	mux.Handle("/mcp", s.mcpHandler())
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) })
 	mux.Handle("/", static)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
