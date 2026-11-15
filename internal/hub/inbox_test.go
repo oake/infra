@@ -120,7 +120,7 @@ func TestInboxDatabaseFailureRetainsInput(t *testing.T) {
 	}
 }
 
-func TestAutomaticEnrollmentAndUnknownInputsAreDiscarded(t *testing.T) {
+func TestAutomaticEnrollmentAndUnknownInputsAreBuffered(t *testing.T) {
 	store := testStore(t)
 	root := t.TempDir()
 	server := &Server{Store: store, Root: root}
@@ -167,8 +167,10 @@ func TestAutomaticEnrollmentAndUnknownInputsAreDiscarded(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"unknown.event.json", "unknown.snapshot.json", "unrelated.event.json", "rejected"} {
-		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
-			t.Fatal("unrelated data retained", name)
+		_, err := os.Stat(filepath.Join(root, name))
+		retained := strings.HasPrefix(name, "unknown.")
+		if retained == os.IsNotExist(err) {
+			t.Fatal("unexpected inbox retention", name)
 		}
 	}
 	if err := store.Observe(t.Context(), api.Beacon{Host: "other/repo/host", Active: path}, now); err == nil {

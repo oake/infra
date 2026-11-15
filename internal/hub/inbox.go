@@ -18,6 +18,9 @@ import (
 )
 
 type rejectedInput struct{ error }
+type pendingInput struct{ error }
+
+func pending(err error) error { return pendingInput{err} }
 
 func reject(err error) error { return rejectedInput{err} }
 
@@ -97,6 +100,10 @@ func (s *Server) ScanInbox(ctx context.Context, inbox string) error {
 		} else {
 			err = s.ingestEvent(ctx, path)
 		}
+		var deferred pendingInput
+		if errors.As(err, &deferred) {
+			continue
+		}
 		var invalid rejectedInput
 		if errors.As(err, &invalid) {
 			slog.Warn("discarding inbox input", "file", input.name, "reason", err)
@@ -122,7 +129,7 @@ func (s *Server) ingestEvent(ctx context.Context, path string) error {
 	err := s.Store.Update(ctx, func(st *State) error {
 		if event.Kind != "evaluation" {
 			if _, ok := st.Repositories[event.Repository]; !ok {
-				return reject(errors.New("no matching evaluation metadata"))
+				return pending(errors.New("no matching evaluation metadata"))
 			}
 		}
 		if event.Kind == "build" || event.Kind == "ready" {
@@ -130,16 +137,23 @@ func (s *Server) ingestEvent(ctx context.Context, path string) error {
 				return reject(errors.New("invalid artifact path"))
 			}
 			if _, ok := st.Repositories[event.Repository]; !ok {
-				return reject(errors.New("no matching evaluation metadata"))
+				return pending(errors.New("no matching evaluation metadata"))
 			}
 			if _, ok := st.Commits[api.ID(event.Repository, event.Revision)]; !ok {
-				return reject(errors.New("no matching evaluation metadata"))
+				return pending(errors.New("no matching evaluation metadata"))
 			}
 			if c := st.Commits[api.ID(event.Repository, event.Revision)]; c.Evaluation == "pending" {
-				return reject(errors.New("no matching evaluation metadata"))
+				return pending(errors.New("no matching evaluation metadata"))
 			}
 			if _, ok := st.Artifacts[event.Artifact]; !ok {
-				return reject(errors.New("artifact absent from evaluation"))
+				return pending(errors.New("artifact absent from evaluation"))
+			}
+		}
+		if event.Kind == "ready" && event.Status == "success" {
+			for _, mapping := range st.Commits[api.ID(event.Repository, event.Revision)].Mappings {
+				if mapping.System == event.Artifact && st.Artifacts[event.Artifact].Snapshot == "" {
+					return pending(errors.New("snapshot has not arrived"))
+				}
 			}
 		}
 		if err := st.ApplyEvent(event, api.ID(string(b)), time.Now().UTC()); err != nil {
@@ -174,7 +188,7 @@ func (s *Server) ingestSnapshot(ctx context.Context, path string) error {
 	return s.Store.Update(ctx, func(st *State) error {
 		a, ok := st.Artifacts[snapshot.Root]
 		if !ok {
-			return reject(errors.New("no matching evaluation metadata"))
+			return pending(errors.New("no matching evaluation metadata"))
 		}
 		if a.Snapshot != "" && a.Snapshot != id {
 			return reject(errors.New("conflicting snapshot for immutable artifact"))
@@ -204,6 +218,7 @@ func (s *Server) ingestSnapshot(ctx context.Context, path string) error {
 		}
 		a.Snapshot, a.Producer = id, Producer
 		st.Artifacts[snapshot.Root] = a
+		st.Reconcile(time.Now().UTC())
 		return nil
 	})
 }

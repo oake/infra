@@ -84,11 +84,10 @@ type InputChange struct {
 	After      string `json:"after"`
 }
 type CheckFailure struct {
-	Name    string `json:"name"`
-	URL     string `json:"url,omitempty"`
-	Detail  string `json:"-"`
-	Summary string `json:"summary,omitempty"`
-	ID      string `json:"-"`
+	Name   string `json:"name"`
+	URL    string `json:"url,omitempty"`
+	Detail string `json:"-"`
+	ID     string `json:"-"`
 }
 type PullRequest struct {
 	FailedChecks []CheckFailure `json:"failed_checks,omitempty"`
@@ -119,20 +118,19 @@ type PackageBlock struct {
 }
 
 type State struct {
-	Hosts         map[string]Host           `json:"hosts"`
-	Repositories  map[string]Repository     `json:"repositories"`
-	Commits       map[string]Commit         `json:"commits"`
-	Artifacts     map[string]Artifact       `json:"artifacts"`
-	Observations  map[string]Observation    `json:"observations"`
-	Jobs          map[string]api.Job        `json:"jobs"`
-	PullRequests  map[string]PullRequest    `json:"pull_requests"`
-	Events        map[string]Event          `json:"-"`
-	Summaries     map[string]FailureSummary `json:"-"`
-	PackageBlocks map[string]PackageBlock   `json:"package_blocks"`
+	Hosts         map[string]Host         `json:"hosts"`
+	Repositories  map[string]Repository   `json:"repositories"`
+	Commits       map[string]Commit       `json:"commits"`
+	Artifacts     map[string]Artifact     `json:"artifacts"`
+	Observations  map[string]Observation  `json:"observations"`
+	Jobs          map[string]api.Job      `json:"jobs"`
+	PullRequests  map[string]PullRequest  `json:"pull_requests"`
+	Events        map[string]Event        `json:"-"`
+	PackageBlocks map[string]PackageBlock `json:"package_blocks"`
 }
 
 func NewState() *State {
-	return &State{map[string]Host{}, map[string]Repository{}, map[string]Commit{}, map[string]Artifact{}, map[string]Observation{}, map[string]api.Job{}, map[string]PullRequest{}, map[string]Event{}, map[string]FailureSummary{}, map[string]PackageBlock{}}
+	return &State{map[string]Host{}, map[string]Repository{}, map[string]Commit{}, map[string]Artifact{}, map[string]Observation{}, map[string]api.Job{}, map[string]PullRequest{}, map[string]Event{}, map[string]PackageBlock{}}
 }
 func (s *State) Artifact(path string) Artifact {
 	a, ok := s.Artifacts[path]

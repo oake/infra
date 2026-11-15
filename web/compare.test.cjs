@@ -44,7 +44,7 @@ test('generic summary has commits and failures; PR detection only changes GitHub
  assert.equal(html,before.replace('https://github.com/a/b/compare/base..head','https://github.com/a/b/pull/1'));
  c.data.checks='failure';c.data.failed_checks=[{name:'slate',summary:'<summary>',detail:'raw trace',url:'https://builder/#/builders/217/builds/399/steps/1/logs/nix_error'}];
  html=vm.runInContext(`commitComparisonView('${key}')`,c.ctx);
- assert(html.includes('Failed checks'));assert(html.includes('&lt;summary&gt;'));assert(!html.includes('raw trace'));assert(html.includes('/steps/1/logs/nix_error'));
+ assert(html.includes('Failed checks'));assert(!html.includes('&lt;summary&gt;'));assert(!html.includes('raw trace'));assert(html.includes('/steps/1/logs/nix_error'));
  c.data.failed_checks[0].summary='';html=vm.runInContext(`commitComparisonView('${key}')`,c.ctx);assert(!html.includes('raw trace'));assert(!html.includes('&lt;summary&gt;'));assert(html.includes('/steps/1/logs/nix_error'));
 });
 
