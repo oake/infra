@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -26,9 +25,7 @@ func main() {
 func run() error {
 	port := flag.Int("http-port", 8787, "HTTP port (listens on 0.0.0.0)")
 	data := flag.String("data", "/var/lib/infra-hub", "state directory")
-	inbox := flag.String("inbox", "", "Buildbot inbox directory (defaults to DATA/inbox)")
-	oaiTokenFile := flag.String("oai-token-file", "", "OpenAI API token file")
-	oaiBaseURL := flag.String("oai-base-url", "https://api.openai.com/v1", "OpenAI API base URL")
+	inbox := flag.String("inbox", "", "CI inbox directory (defaults to DATA/inbox)")
 	flag.Parse()
 	if *port < 1 || *port > 65535 {
 		return fmt.Errorf("http-port must be between 1 and 65535")
@@ -47,14 +44,7 @@ func run() error {
 	if e := server.MigrateSnapshots(ctx); e != nil {
 		slog.Error("snapshot migration", "error", e)
 	}
-	if *oaiTokenFile != "" {
-		token, err := os.ReadFile(*oaiTokenFile)
-		if err != nil {
-			return err
-		}
-		server.Summarizer = &hub.Summarizer{Token: strings.TrimSpace(string(token)), BaseURL: *oaiBaseURL}
-		go server.RunSummaries(ctx)
-	}
+
 	e = store.Update(ctx, func(s *hub.State) error {
 		s.Reconcile(time.Now().UTC())
 		return nil

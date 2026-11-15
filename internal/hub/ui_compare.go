@@ -141,17 +141,6 @@ func (s *Server) CompareCommits(ctx context.Context, repo, old, next string) (Co
 		state.Artifacts[a.Path] = a
 	}
 	out.Checks, out.FailedChecks = state.BuildStatus(repo, next)
-	summaryIDs := []string{}
-	for _, f := range out.FailedChecks {
-		summaryIDs = append(summaryIDs, f.ID)
-	}
-	summaries, err := readUIRows[FailureSummary](ctx, tx, "SELECT id,body FROM summaries WHERE id IN (SELECT value FROM json_each($1))", jsonStrings(summaryIDs))
-	if err != nil {
-		return out, err
-	}
-	for i := range out.FailedChecks {
-		out.FailedChecks[i].Summary = summaries[out.FailedChecks[i].ID].Summary
-	}
 	rules, err := readUIRows[PackageBlock](ctx, tx, "SELECT id,body FROM package_blocks")
 	if err != nil {
 		return out, err
